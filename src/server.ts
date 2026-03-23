@@ -139,7 +139,6 @@ export function createServer() {
   app.get("/flights/:id/seats", async (request) => getOccupiedSeats(Number((request.params as { id: string }).id)));
   app.get("/participant/:hash", async (request, reply) => {
     const hash = (request.params as { hash: string }).hash;
-    if (!(await requirePassengerAuth(request, reply, hash))) return;
     const participant = await getParticipantByHash(hash);
     if (!participant) {
       return error(reply, "Participant not found", 404);
