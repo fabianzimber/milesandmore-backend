@@ -1,4 +1,5 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import cookie from "@fastify/cookie";
 import {
   addManagedChannel,
   assignSeats,
@@ -78,8 +79,36 @@ async function requireAdmin(reply: FastifyReply, request: FastifyRequest): Promi
   return false;
 }
 
+async function requirePassengerAuth(request: FastifyRequest, reply: FastifyReply, hash: string): Promise<boolean> {
+  const raw = request.cookies?.passenger_session;
+  if (!raw) {
+    error(reply, "Nicht eingeloggt", 401);
+    return false;
+  }
+  const unsigned = (request as any).unsignCookie(raw);
+  if (!unsigned.valid || !unsigned.value) {
+    error(reply, "Ungültige Session", 401);
+    return false;
+  }
+  let session: { user_id: string; hash: string };
+  try {
+    session = JSON.parse(unsigned.value);
+  } catch {
+    error(reply, "Ungültige Session", 401);
+    return false;
+  }
+  const participant = await repositories.participants.getByHash(hash);
+  if (!participant || participant.user_id !== session.user_id) {
+    error(reply, "Kein Zugriff", 403);
+    return false;
+  }
+  return true;
+}
+
 export function createServer() {
   const app = Fastify({ logger: true });
+
+  app.register(cookie, { secret: milesandmorebotEnv.authSecret });
 
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
@@ -95,6 +124,7 @@ export function createServer() {
     }
     reply.header("access-control-allow-headers", "content-type,x-internal-job-secret,x-simlink-secret");
     reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+    reply.header("access-control-allow-credentials", "true");
     if (request.method === "OPTIONS") {
       return reply.code(204).send();
     }
@@ -108,7 +138,9 @@ export function createServer() {
   app.get("/flights/:id/participants", async (request) => getFlightParticipants(Number((request.params as { id: string }).id)));
   app.get("/flights/:id/seats", async (request) => getOccupiedSeats(Number((request.params as { id: string }).id)));
   app.get("/participant/:hash", async (request, reply) => {
-    const participant = await getParticipantByHash((request.params as { hash: string }).hash);
+    const hash = (request.params as { hash: string }).hash;
+    if (!(await requirePassengerAuth(request, reply, hash))) return;
+    const participant = await getParticipantByHash(hash);
     if (!participant) {
       return error(reply, "Participant not found", 404);
     }
@@ -221,6 +253,7 @@ export function createServer() {
     if (!body.participant_hash || !body.new_seat) {
       return error(reply, "participant_hash and new_seat required");
     }
+    if (!(await requirePassengerAuth(request, reply, body.participant_hash))) return;
     try {
       return await changeSeat(body.participant_hash, body.new_seat);
     } catch (cause) {
@@ -268,6 +301,114 @@ export function createServer() {
       return error(reply, cause instanceof Error ? cause.message : "Failed to run boarding close job", 500);
     }
   });
+
+  // ── Passenger OAuth ────────────────────────────────────────────────
+
+  app.get("/api/passenger/session", async (request) => {
+    const raw = request.cookies?.passenger_session;
+    if (!raw) return { authenticated: false };
+    const unsigned = (request as any).unsignCookie(raw);
+    if (!unsigned.valid || !unsigned.value) return { authenticated: false };
+    try {
+      const session = JSON.parse(unsigned.value) as { user_id: string; hash: string };
+      return { authenticated: true, user_id: session.user_id, hash: session.hash };
+    } catch {
+      return { authenticated: false };
+    }
+  });
+
+  app.get("/api/twitch/passenger/authorize", async (request, reply) => {
+    const hash = (request.query as { hash?: string }).hash;
+    if (!hash) {
+      return error(reply, "hash query parameter required");
+    }
+    const participant = await repositories.participants.getByHash(hash);
+    if (!participant) {
+      return error(reply, "Participant not found", 404);
+    }
+    const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
+    const redirectUri = new URL("/api/twitch/passenger/callback", url.origin).toString();
+    const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
+    authUrl.searchParams.set("client_id", milesandmorebotEnv.twitchAppClientId);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "");
+    authUrl.searchParams.set("state", hash);
+    authUrl.searchParams.set("force_verify", "true");
+    return reply.redirect(authUrl.toString());
+  });
+
+  app.get("/api/twitch/passenger/callback", async (request, reply) => {
+    const qs = request.query as { code?: string; error?: string; state?: string };
+    if (qs.error) {
+      return error(reply, qs.error, 400);
+    }
+    if (!qs.code || !qs.state) {
+      return error(reply, "Missing code or state parameter", 400);
+    }
+
+    const participantHash = qs.state;
+    const participant = await repositories.participants.getByHash(participantHash);
+    if (!participant) {
+      return error(reply, "Participant not found", 404);
+    }
+
+    const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
+    const redirectUri = new URL("/api/twitch/passenger/callback", url.origin).toString();
+
+    const tokenResponse = await fetch("https://id.twitch.tv/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: milesandmorebotEnv.twitchAppClientId,
+        client_secret: milesandmorebotEnv.twitchAppClientSecret,
+        code: qs.code,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      return error(reply, "Token-Austausch fehlgeschlagen", 400);
+    }
+
+    const tokenData = (await tokenResponse.json()) as { access_token: string };
+    const validateResponse = await fetch("https://id.twitch.tv/oauth2/validate", {
+      headers: { Authorization: `OAuth ${tokenData.access_token}` },
+    });
+
+    if (!validateResponse.ok) {
+      return error(reply, "Token-Validierung fehlgeschlagen", 400);
+    }
+
+    const validateData = (await validateResponse.json()) as { user_id: string; login: string };
+
+    if (validateData.user_id !== participant.user_id) {
+      return reply.type("text/html").code(403).send(`<html>
+  <body style="font-family: sans-serif; text-align: center; margin-top: 80px;">
+    <h1>Zugriff verweigert</h1>
+    <p>Dein Twitch-Account <strong>${escapeHtml(validateData.login)}</strong> stimmt nicht mit dem Passagier überein.</p>
+    <p>Bitte logge dich mit dem richtigen Account ein.</p>
+  </body>
+</html>`);
+    }
+
+    const sessionValue = JSON.stringify({ user_id: validateData.user_id, hash: participantHash });
+    const frontendTarget = `${milesandmorebotEnv.frontendUrl || milesandmorebotEnv.appUrl}/flight/${participantHash}`;
+
+    return reply
+      .setCookie("passenger_session", sessionValue, {
+        path: "/",
+        signed: true,
+        httpOnly: true,
+        secure: milesandmorebotEnv.appUrl.startsWith("https"),
+        sameSite: "lax",
+        maxAge: 60 * 60 * 24 * 7, // 7 days
+      })
+      .redirect(frontendTarget);
+  });
+
+  // ── Streamer OAuth ────────────────────────────────────────────────
 
   app.get("/api/twitch/authorize", async (request, reply) => {
     const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
