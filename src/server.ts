@@ -181,7 +181,11 @@ export function createServer() {
 
   app.post("/flights", async (request, reply) => {
     if (!(await requireAdmin(reply, request))) return;
-    return createFlight(parseJsonBody(request));
+    try {
+      return await createFlight(parseJsonBody(request));
+    } catch (cause) {
+      return error(reply, cause instanceof Error ? cause.message : "Flight konnte nicht erstellt werden.");
+    }
   });
   app.post("/flights/:id/status", async (request, reply) => {
     if (!(await requireAdmin(reply, request))) return;
