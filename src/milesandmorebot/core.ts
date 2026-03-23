@@ -312,8 +312,8 @@ export async function updateFlightStatus(flightId: number, status: Flight["statu
       ? {
           warning_job_id: null,
           close_job_id: null,
-          warning_at: undefined,
-          close_at: undefined,
+          warning_at: 0,
+          close_at: 0,
         }
       : {}),
   });
@@ -631,7 +631,6 @@ export async function removeManagedChannel(channelName: string) {
 export async function fetchSimBriefFlightPlan(pilotId: string): Promise<SimBriefFlightPlan> {
   const response = await fetch(
     `https://www.simbrief.com/api/xml.fetcher.php?username=${encodeURIComponent(pilotId)}&json=1`,
-    { cache: "no-store" },
   );
   const data = (await response.json()) as Record<string, unknown>;
   if (!response.ok || !data.origin || !data.destination) {
@@ -876,19 +875,12 @@ const commands: CommandDefinition[] = [
       if (context.sender.perms >= permissions.admin && context.args[0]) {
         channelName = context.args[0].toLowerCase();
       }
-      const userId = await resolveUserId(channelName);
-      if (!userId) {
-        await context.send("Dieser Twitch User existiert leider nicht. Susge");
+      try {
+        await addManagedChannel(channelName);
+      } catch (err) {
+        await context.send(err instanceof Error ? err.message : "Konnte den Kanal nicht hinzufügen.");
         return;
       }
-      await repositories.channels.add(channelName, userId).catch(async (error: Error & { code?: string }) => {
-        if (error.code !== "ER_DUP_ENTRY") {
-          throw error;
-        }
-      });
-      await repositories.ncMessages.setSent(userId);
-      await addManagedChannel(channelName);
-      await context.send(`Ich bin jetzt in @${channelName} aktiv. peepoHappy`);
     },
   },
   {

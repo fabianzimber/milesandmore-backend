@@ -35,6 +35,10 @@ import { joinIrcChannel } from "./milesandmorebot/irc";
 import { verifyQStashRequest } from "./milesandmorebot/scheduler";
 import type { Flight, ScheduledFlightJob } from "./lib/types";
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function parseJsonBody<T>(request: FastifyRequest): T {
   const body = request.body;
   if (typeof body === "string") {
@@ -83,10 +87,11 @@ export function createServer() {
 
   app.addHook("onRequest", async (request, reply) => {
     const origin = request.headers.origin;
-    if (origin && milesandmorebotEnv.appUrl && origin !== milesandmorebotEnv.appUrl) {
-      reply.header("access-control-allow-origin", milesandmorebotEnv.appUrl);
-    } else if (origin) {
-      reply.header("access-control-allow-origin", origin);
+    const allowedOrigin = milesandmorebotEnv.frontendUrl || milesandmorebotEnv.appUrl;
+    if (origin) {
+      if (!allowedOrigin || origin === allowedOrigin || origin === milesandmorebotEnv.appUrl) {
+        reply.header("access-control-allow-origin", origin);
+      }
     }
     reply.header("access-control-allow-headers", "content-type,x-internal-job-secret,x-simlink-secret");
     reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
@@ -331,7 +336,7 @@ export function createServer() {
       return reply.type("text/html").send(`<html>
   <body>
     <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
-    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${channelLogin}</strong>!</p>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${escapeHtml(channelLogin)}</strong>!</p>
     <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
   </body>
 </html>`);
@@ -424,7 +429,7 @@ export function createServer() {
       return reply.type("text/html").send(`<html>
   <body>
     <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
-    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${channelLogin}</strong>!</p>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${escapeHtml(channelLogin)}</strong>!</p>
     <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
   </body>
 </html>`);

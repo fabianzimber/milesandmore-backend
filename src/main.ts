@@ -7,7 +7,7 @@ import { startLocalScheduler } from "./milesandmorebot/local-scheduler";
 async function main() {
   const app = createServer();
   const host = process.env.HOST || "0.0.0.0";
-  const port = Number(process.env.PORT || "3001");
+  const port = Number(process.env.PORT || "8080");
 
   await repositories.ensureBootTimestamp();
   await app.listen({ host, port });

@@ -119,7 +119,6 @@ export const repositories = {
         uptime: Math.max(0, Date.now() - Number(bootedAt)),
         channels: channels.length,
         commandsExecuted: Number(commandsExecuted || 0),
-        wsClients: 0,
         activeFlights: boarding.length + inFlight.length,
         lastEventAt: lastEventAt ? Number(lastEventAt) : null,
       };
@@ -482,37 +481,6 @@ export const repositories = {
       return loadMany(names, (name) => getObject<ChannelRecord>(key("channel", name)));
     },
 
-    async updateBanned(userId: string, banned: boolean): Promise<void> {
-      const name = await getRedis().get<string>(key("channelByUser", userId));
-      if (!name) {
-        return;
-      }
-      const record = await getObject<ChannelRecord>(key("channel", name));
-      if (!record) {
-        return;
-      }
-      await setObject(key("channel", name), { ...record, banned: banned ? 1 : 0 });
-    },
-
-    async updateName(userId: string, newName: string): Promise<void> {
-      const previousName = await getRedis().get<string>(key("channelByUser", userId));
-      if (!previousName) {
-        return;
-      }
-      const record = await getObject<ChannelRecord>(key("channel", previousName));
-      if (!record) {
-        return;
-      }
-      const updated: ChannelRecord = { ...record, name: newName };
-      const pipeline = getRedis().pipeline();
-      pipeline.del(key("channel", previousName));
-      pipeline.srem(key("channels"), previousName);
-      pipeline.set(key("channel", newName), updated);
-      pipeline.set(key("channelByUser", userId), newName);
-      pipeline.sadd(key("channels"), newName);
-      await pipeline.exec();
-    },
-
     async remove(name: string): Promise<void> {
       const record = await getObject<ChannelRecord>(key("channel", name));
       const pipeline = getRedis().pipeline();
@@ -524,12 +492,6 @@ export const repositories = {
       await pipeline.exec();
     },
 
-    async removeByUserId(userId: string): Promise<void> {
-      const name = await getRedis().get<string>(key("channelByUser", userId));
-      if (name) {
-        await repositories.channels.remove(name);
-      }
-    },
   },
 
   managedChannels: {
@@ -604,19 +566,6 @@ export const repositories = {
     },
     async markRestarted(timestamp = Date.now()): Promise<void> {
       await getRedis().set(key("runtimeConfig", "botRestartedAt"), timestamp);
-    },
-  },
-
-  botLogs: {
-    async getRecent(limit = 100) {
-      const rows = (await getRedis().lrange(key("botLogs"), 0, Math.max(0, limit - 1))) || [];
-      return [...rows].reverse();
-    },
-  },
-
-  ncMessages: {
-    async setSent(channelId: string): Promise<void> {
-      await getRedis().set(key("cache", "nc", channelId), "1", { ex: 86400 });
     },
   },
 
