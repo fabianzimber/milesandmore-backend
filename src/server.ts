@@ -379,7 +379,7 @@ export function createServer() {
       return reply.type("text/html").send(`<html>
   <body>
     <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
-    <p style="font-family: sans-serif;">MilesAndMore hat nun offizielle Rechte als \"Chat Bot\" in deinem Kanal <strong>${channelLogin}</strong>!</p>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als \"Chat Bot\" in deinem Kanal <strong>${channelLogin}</strong>!</p>
     <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
   </body>
 </html>`);

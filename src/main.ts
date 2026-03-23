@@ -9,7 +9,7 @@ async function main() {
 
   await repositories.ensureBootTimestamp();
   await app.listen({ host, port });
-  await milesandmorebotLogger.info(`MilesAndMore backend listening on ${host}:${port}`);
+  await milesandmorebotLogger.info(`Miles & More backend listening on ${host}:${port}`);
 }
 
 main().catch((error) => {

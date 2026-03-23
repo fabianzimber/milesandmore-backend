@@ -1,11 +1,11 @@
-# MilesAndMore Backend
+# Miles & More Backend
 
-Standalone backend for MilesAndMore, intended for Railway deployment.
+Standalone backend for Miles & More, intended for Railway deployment.
 
 ## What is included
 
 - Fastify HTTP server (`src/server.ts`)
-- MilesAndMore bot runtime + storage + Twitch/EventSub integration (`src/milesandmorebot/*`)
+- Miles & More bot runtime + storage + Twitch/EventSub integration (`src/milesandmorebot/*`)
 - API endpoints consumed by the web app (`/flights`, `/channels`, `/bot/*`, `/simbrief/*`, `/simlink/*`, etc.)
 - Webhook endpoints:
   - `POST /api/twitch/eventsub`

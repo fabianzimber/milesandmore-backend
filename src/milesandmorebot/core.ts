@@ -593,7 +593,7 @@ export async function addManagedChannel(channelName: string) {
       // Fallback to IRC
       await joinIrcChannel(lower);
     }
-    await say(lower, "MilesAndMore ist jetzt an Bord.");
+    await say(lower, "Miles & More ist jetzt an Bord.");
     return channel;
   } catch (error) {
     if (channelCreated) {
