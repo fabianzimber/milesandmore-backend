@@ -64,7 +64,7 @@ class TwitchRequestError extends Error {
 
 const TWITCH_API_BASE = "https://api.twitch.tv/helix";
 const TWITCH_OAUTH_BASE = "https://id.twitch.tv/oauth2";
-const REQUIRED_BOT_SCOPES = ["user:bot", "user:read:chat", "user:write:chat"] as const;
+const REQUIRED_BOT_SCOPES = ["user:bot", "user:read:chat", "user:write:chat", "user:manage:whispers"] as const;
 
 let appAccessTokenCache:
   | {
@@ -508,6 +508,16 @@ export async function sendChatMessage(channelName: string, message: string): Pro
   }
 
   await milesandmorebotLogger.chat(`[OUT] #${channelName}: ${message}`);
+}
+
+export async function sendWhisper(toUserId: string, message: string): Promise<void> {
+  const botUser = await getBotUser();
+  const params = new URLSearchParams({ from_user_id: botUser.id, to_user_id: toUserId });
+  await twitchFetch(`/whispers?${params}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
 }
 
 export async function measurePing(): Promise<number> {
