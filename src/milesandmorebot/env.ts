@@ -19,6 +19,7 @@ export function getAppUrl(): string {
 
 export const milesandmorebotEnv = {
   appUrl: getAppUrl(),
+  frontendUrl: process.env.FRONTEND_URL || "",
   authSecret: process.env.AUTH_SECRET || "",
   adminTwitchIds: optionalList("ADMIN_TWITCH_IDS"),
   internalJobSecret: process.env.INTERNAL_JOB_SECRET || process.env.MILESANDMORE_INTERNAL_API_SECRET || "",

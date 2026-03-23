@@ -371,13 +371,13 @@ export async function assignSeats(flightId: number) {
     });
   }
 
+  const assignedParticipantIds = new Set(assignments.map((a) => a.user_id));
   for (const participant of participants) {
     if (assignments.length >= maxSeats) {
       break;
     }
 
-    const currentSeat = participant.seat ? normalizeSeatId(participant.seat) : "";
-    if (currentSeat && seenSeats.has(currentSeat)) {
+    if (assignedParticipantIds.has(participant.user_id)) {
       continue;
     }
 
@@ -463,7 +463,8 @@ function generateBoardingPass(participant: Participant, flight: Flight) {
 }
 
 export function getDashboardUrl(participantHash: string): string {
-  return `${milesandmorebotEnv.appUrl}/flight/${participantHash}`;
+  const base = milesandmorebotEnv.frontendUrl || milesandmorebotEnv.appUrl;
+  return `${base}/flight/${participantHash}`;
 }
 
 export async function awardFlightRewards(flightId: number) {
@@ -709,14 +710,12 @@ const commands: CommandDefinition[] = [
     cooldown: { global: 0, user: 5, channel: 0 },
     permissionLevel: permissions.mod,
     async execute(context) {
-      const boarding = await repositories.flights.getByStatus("boarding");
-      const inFlight = await repositories.flights.getByStatus("in_flight");
-      const activeFlights = [...boarding, ...inFlight].filter((flight) => flight.channel_name === context.channel.login);
-      if (activeFlights.length === 0) {
+      const flight = await repositories.flights.getByChannelAndStatus(context.channel.login, ["boarding", "in_flight"]);
+      if (!flight) {
         await context.send("Es gibt aktuell keinen aktiven Flug zum Abbrechen. modCheck");
         return;
       }
-      for (const flight of activeFlights) {
+      {
         const depName = flight.dep_name || flight.icao_from;
         const arrName = flight.arr_name || flight.icao_to;
         if (flight.status === "boarding") {
@@ -767,8 +766,7 @@ const commands: CommandDefinition[] = [
     cooldown: { global: 0, user: 5, channel: 0 },
     permissionLevel: permissions.mod,
     async execute(context) {
-      const inFlight = await repositories.flights.getByStatus("in_flight");
-      const flight = inFlight.find((current) => current.pilot === context.sender.login);
+      const flight = await repositories.flights.getByChannelAndStatus(context.channel.login, ["in_flight"]);
       if (!flight) {
         await context.send("Du befindest dich derzeit in keinem aktiven Flug. modCheck");
         return;

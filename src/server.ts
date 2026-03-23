@@ -97,7 +97,7 @@ export function createServer() {
     reply.header("access-control-allow-headers", "content-type,x-internal-job-secret,x-simlink-secret");
     reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
     if (request.method === "OPTIONS") {
-      reply.code(204).send();
+      return reply.code(204).send();
     }
   });
 
