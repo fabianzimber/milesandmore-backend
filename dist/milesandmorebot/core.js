@@ -330,8 +330,11 @@ async function resumeBoarding(flightId, extraMinutes = 5) {
     }
 }
 async function resumeFlight(flightId) {
-    await storage_1.repositories.simlink.setFlightId(flightId);
-    return updateFlightStatus(flightId, "in_flight");
+    const updated = await updateFlightStatus(flightId, "in_flight");
+    if (updated) {
+        await storage_1.repositories.simlink.setFlightId(flightId);
+    }
+    return updated;
 }
 async function assignSeats(flightId) {
     const flight = await storage_1.repositories.flights.getById(flightId);
@@ -426,6 +429,13 @@ async function addParticipant(flightId, userId, userName) {
         joined_at: Date.now(),
         miles_earned: 0,
     });
+    if (!participant) {
+        const raceWinner = await storage_1.repositories.participants.getByFlightAndUser(flightId, userId);
+        if (!raceWinner) {
+            throw new Error(`Race condition: participant key exists but record not found for flight ${flightId}, user ${userId}`);
+        }
+        return { alreadyJoined: true, participant: raceWinner };
+    }
     return { alreadyJoined: false, participant };
 }
 function generateBoardingPass(participant, flight) {
@@ -449,6 +459,10 @@ function getDashboardUrl(participantHash) {
     return `${base}/flight/${participantHash}`;
 }
 async function awardFlightRewards(flightId) {
+    const locked = await storage_1.repositories.flights.tryAcquireRewardLock(flightId);
+    if (!locked) {
+        return [];
+    }
     const flight = await storage_1.repositories.flights.getById(flightId);
     if (!flight) {
         throw new Error("Flight not found");

@@ -38,6 +38,7 @@ exports.stopLocalScheduler = stopLocalScheduler;
 const storage_1 = require("./storage");
 const logger_1 = require("./logger");
 const scheduler_1 = require("./scheduler");
+const twitch_1 = require("./twitch");
 const core_1 = require("./core");
 const POLL_INTERVAL_MS = 15_000; // check every 15 seconds
 const STUCK_BOARDING_TIMEOUT_MS = 30 * 60 * 1000; // 30 min max boarding
@@ -55,8 +56,14 @@ function startLocalScheduler() {
         return;
     }
     globalForScheduler.localSchedulerTimer = setInterval(() => {
+        if (globalForScheduler.localSchedulerTickRunning)
+            return;
+        globalForScheduler.localSchedulerTickRunning = true;
         runSchedulerTick().catch((error) => {
             logger_1.milesandmorebotLogger.error(`[LocalScheduler] tick error: ${error instanceof Error ? error.message : "unknown"}`).catch(() => { });
+        })
+            .finally(() => {
+            globalForScheduler.localSchedulerTickRunning = false;
         });
     }, POLL_INTERVAL_MS);
     const mode = (0, scheduler_1.isQStashConfigured)() ? "fallback (QStash primary)" : "primary (no QStash)";
@@ -81,6 +88,33 @@ function getGracePeriod(hasQStashJobId) {
 }
 async function runSchedulerTick() {
     const now = Date.now();
+    // --- Token refresh check ---
+    try {
+        const nextRefreshAt = await storage_1.repositories.runtimeConfig.getNextTokenRefreshAt();
+        if (nextRefreshAt && nextRefreshAt <= now) {
+            await logger_1.milesandmorebotLogger.info("[LocalScheduler] Bot-Token-Refresh faellig, starte Refresh...");
+            const refreshed = await (0, twitch_1.refreshBotAccessToken)();
+            if (refreshed) {
+                // Reconnect IRC with the new token
+                const { resetIrcClient, getIrcClient, joinIrcChannel } = await Promise.resolve().then(() => __importStar(require("./irc")));
+                await resetIrcClient("token refresh");
+                await getIrcClient();
+                const channels = await storage_1.repositories.managedChannels.getAll();
+                for (const channel of channels) {
+                    await joinIrcChannel(channel.channel_name);
+                }
+                await logger_1.milesandmorebotLogger.info("[LocalScheduler] IRC nach Token-Refresh neu verbunden.");
+            }
+            else {
+                // Retry in 5 minutes on failure
+                await storage_1.repositories.runtimeConfig.setNextTokenRefreshAt(now + 5 * 60 * 1000);
+                await logger_1.milesandmorebotLogger.warn("[LocalScheduler] Token-Refresh fehlgeschlagen, Retry in 5 Minuten.");
+            }
+        }
+    }
+    catch (error) {
+        await logger_1.milesandmorebotLogger.error(`[LocalScheduler] Token-Refresh-Pruefung fehlgeschlagen: ${error instanceof Error ? error.message : "unknown"}`);
+    }
     // --- Process boarding flights ---
     const boardingFlights = await storage_1.repositories.flights.getByStatus("boarding");
     for (const flight of boardingFlights) {
@@ -91,7 +125,7 @@ async function runSchedulerTick() {
         if (flight.close_at && flight.close_at + getGracePeriod(hasCloseJob) <= now) {
             await logger_1.milesandmorebotLogger.info(`[LocalScheduler] closing boarding for flight ${flight.id} (#${flight.channel_name})${hasCloseJob ? " [QStash missed]" : ""}`);
             await (0, core_1.finishBoardingJob)(flight.id, flight.channel_name, lifecycleVersion);
-            sentWarnings.delete(`warning:${flight.id}`);
+            sentWarnings.delete(`warning:${flight.id}:${lifecycleVersion}`);
             continue;
         }
         // Check if warning should be sent (with grace period for QStash)
@@ -111,7 +145,7 @@ async function runSchedulerTick() {
         if (boardingAge > STUCK_BOARDING_TIMEOUT_MS && (!flight.close_at || flight.close_at < now - 60_000)) {
             await logger_1.milesandmorebotLogger.warn(`[LocalScheduler] force-closing stuck boarding for flight ${flight.id} (#${flight.channel_name}, age: ${Math.round(boardingAge / 60_000)}min)`);
             await (0, core_1.finishBoardingJob)(flight.id, flight.channel_name, lifecycleVersion);
-            sentWarnings.delete(`warning:${flight.id}`);
+            sentWarnings.delete(`warning:${flight.id}:${lifecycleVersion}`);
         }
     }
     // --- Process in-flight flights: fail-safe timeout ---

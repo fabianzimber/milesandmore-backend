@@ -384,8 +384,11 @@ export async function resumeBoarding(flightId: number, extraMinutes = 5): Promis
 }
 
 export async function resumeFlight(flightId: number): Promise<Flight | null> {
-  await repositories.simlink.setFlightId(flightId);
-  return updateFlightStatus(flightId, "in_flight");
+  const updated = await updateFlightStatus(flightId, "in_flight");
+  if (updated) {
+    await repositories.simlink.setFlightId(flightId);
+  }
+  return updated;
 }
 
 export async function assignSeats(flightId: number) {
@@ -494,6 +497,13 @@ export async function addParticipant(flightId: number, userId: string, userName:
     joined_at: Date.now(),
     miles_earned: 0,
   });
+  if (!participant) {
+    const raceWinner = await repositories.participants.getByFlightAndUser(flightId, userId);
+    if (!raceWinner) {
+      throw new Error(`Race condition: participant key exists but record not found for flight ${flightId}, user ${userId}`);
+    }
+    return { alreadyJoined: true, participant: raceWinner };
+  }
   return { alreadyJoined: false, participant };
 }
 
@@ -520,6 +530,10 @@ export function getDashboardUrl(participantHash: string): string {
 }
 
 export async function awardFlightRewards(flightId: number) {
+  const locked = await repositories.flights.tryAcquireRewardLock(flightId);
+  if (!locked) {
+    return [];
+  }
   const flight = await repositories.flights.getById(flightId);
   if (!flight) {
     throw new Error("Flight not found");

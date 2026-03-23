@@ -1,6 +1,7 @@
 import { repositories } from "./storage";
 import { milesandmorebotLogger } from "./logger";
 import { isQStashConfigured } from "./scheduler";
+import { refreshBotAccessToken } from "./twitch";
 import {
   finishBoardingJob,
   sendBoardingWarningJob,
@@ -19,6 +20,7 @@ const QSTASH_GRACE_PERIOD_MS = 60_000; // 1 minute grace
 const globalForScheduler = globalThis as unknown as {
   localSchedulerTimer?: ReturnType<typeof setInterval>;
   localSchedulerWarnings?: Set<string>;
+  localSchedulerTickRunning?: boolean;
 };
 
 // Track which warnings we already sent so we don't spam
@@ -30,11 +32,16 @@ export function startLocalScheduler(): void {
   }
 
   globalForScheduler.localSchedulerTimer = setInterval(() => {
+    if (globalForScheduler.localSchedulerTickRunning) return;
+    globalForScheduler.localSchedulerTickRunning = true;
     runSchedulerTick().catch((error) => {
-      milesandmorebotLogger.error(
-        `[LocalScheduler] tick error: ${error instanceof Error ? error.message : "unknown"}`,
-      ).catch(() => {});
-    });
+        milesandmorebotLogger.error(
+          `[LocalScheduler] tick error: ${error instanceof Error ? error.message : "unknown"}`,
+        ).catch(() => {});
+      })
+      .finally(() => {
+        globalForScheduler.localSchedulerTickRunning = false;
+      });
   }, POLL_INTERVAL_MS);
 
   const mode = isQStashConfigured() ? "fallback (QStash primary)" : "primary (no QStash)";
@@ -63,6 +70,34 @@ function getGracePeriod(hasQStashJobId: boolean): number {
 async function runSchedulerTick(): Promise<void> {
   const now = Date.now();
 
+  // --- Token refresh check ---
+  try {
+    const nextRefreshAt = await repositories.runtimeConfig.getNextTokenRefreshAt();
+    if (nextRefreshAt && nextRefreshAt <= now) {
+      await milesandmorebotLogger.info("[LocalScheduler] Bot-Token-Refresh faellig, starte Refresh...");
+      const refreshed = await refreshBotAccessToken();
+      if (refreshed) {
+        // Reconnect IRC with the new token
+        const { resetIrcClient, getIrcClient, joinIrcChannel } = await import("./irc");
+        await resetIrcClient("token refresh");
+        await getIrcClient();
+        const channels = await repositories.managedChannels.getAll();
+        for (const channel of channels) {
+          await joinIrcChannel(channel.channel_name);
+        }
+        await milesandmorebotLogger.info("[LocalScheduler] IRC nach Token-Refresh neu verbunden.");
+      } else {
+        // Retry in 5 minutes on failure
+        await repositories.runtimeConfig.setNextTokenRefreshAt(now + 5 * 60 * 1000);
+        await milesandmorebotLogger.warn("[LocalScheduler] Token-Refresh fehlgeschlagen, Retry in 5 Minuten.");
+      }
+    }
+  } catch (error) {
+    await milesandmorebotLogger.error(
+      `[LocalScheduler] Token-Refresh-Pruefung fehlgeschlagen: ${error instanceof Error ? error.message : "unknown"}`,
+    );
+  }
+
   // --- Process boarding flights ---
   const boardingFlights = await repositories.flights.getByStatus("boarding");
   for (const flight of boardingFlights) {
@@ -76,7 +111,7 @@ async function runSchedulerTick(): Promise<void> {
         `[LocalScheduler] closing boarding for flight ${flight.id} (#${flight.channel_name})${hasCloseJob ? " [QStash missed]" : ""}`,
       );
       await finishBoardingJob(flight.id, flight.channel_name, lifecycleVersion);
-      sentWarnings.delete(`warning:${flight.id}`);
+      sentWarnings.delete(`warning:${flight.id}:${lifecycleVersion}`);
       continue;
     }
 
@@ -103,7 +138,7 @@ async function runSchedulerTick(): Promise<void> {
         `[LocalScheduler] force-closing stuck boarding for flight ${flight.id} (#${flight.channel_name}, age: ${Math.round(boardingAge / 60_000)}min)`,
       );
       await finishBoardingJob(flight.id, flight.channel_name, lifecycleVersion);
-      sentWarnings.delete(`warning:${flight.id}`);
+      sentWarnings.delete(`warning:${flight.id}:${lifecycleVersion}`);
     }
   }
 

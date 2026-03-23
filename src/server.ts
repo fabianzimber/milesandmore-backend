@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import {
@@ -43,7 +44,11 @@ function escapeHtml(text: string): string {
 function parseJsonBody<T>(request: FastifyRequest): T {
   const body = request.body;
   if (typeof body === "string") {
-    return JSON.parse(body) as T;
+    try {
+      return JSON.parse(body) as T;
+    } catch {
+      throw new SyntaxError("Invalid JSON body");
+    }
   }
   return (body || {}) as T;
 }
@@ -66,7 +71,7 @@ function toWebRequest(request: FastifyRequest, rawBody?: string): Request {
 function isAdminAuthorized(request: FastifyRequest): boolean {
   const configured = milesandmorebotEnv.internalJobSecret;
   if (!configured) {
-    return true;
+    return false;
   }
   return request.headers["x-internal-job-secret"] === configured;
 }
@@ -88,6 +93,15 @@ export function createServer() {
 
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
+  });
+
+  app.setErrorHandler(async (err, _request, reply) => {
+    if (err instanceof SyntaxError) {
+      return reply.code(400).send({ error: err.message || "Invalid JSON body" });
+    }
+    const statusCode = "statusCode" in (err as object) ? (err as Error & { statusCode: number }).statusCode : 500;
+    const message = err instanceof Error ? err.message : "Internal Server Error";
+    return reply.code(statusCode).send({ error: message });
   });
 
   app.addHook("onRequest", async (request, reply) => {
@@ -280,6 +294,15 @@ export function createServer() {
   // ── Streamer OAuth ────────────────────────────────────────────────
 
   app.get("/api/twitch/authorize", async (request, reply) => {
+    const state = crypto.randomUUID();
+    reply.setCookie("twitch_oauth_state", state, {
+      path: "/",
+      httpOnly: true,
+      signed: true,
+      secure: milesandmorebotEnv.appUrl.startsWith("https"),
+      sameSite: "lax",
+      maxAge: 600,
+    });
     const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
     const redirectUri = new URL("/api/twitch/callback", url.origin).toString();
     const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
@@ -288,16 +311,23 @@ export function createServer() {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("scope", "channel:bot");
     authUrl.searchParams.set("force_verify", "true");
+    authUrl.searchParams.set("state", state);
     return reply.redirect(authUrl.toString());
   });
 
   app.get("/api/twitch/callback", async (request, reply) => {
-    const qs = request.query as { code?: string; error?: string };
+    const qs = request.query as { code?: string; error?: string; state?: string };
     if (qs.error) {
       return error(reply, qs.error, 400);
     }
     if (!qs.code) {
       return error(reply, "Missing code parameter", 400);
+    }
+    const cookieValue = request.cookies.twitch_oauth_state;
+    const unsigned = cookieValue ? request.unsignCookie(cookieValue) : { valid: false, value: null };
+    reply.clearCookie("twitch_oauth_state", { path: "/" });
+    if (!unsigned.valid || unsigned.value !== qs.state) {
+      return error(reply, "Invalid or missing OAuth state", 403);
     }
 
     const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
@@ -365,6 +395,15 @@ export function createServer() {
     if (!botClientId) {
       return error(reply, "TWITCH_BOT_CLIENT_ID is not configured", 500);
     }
+    const state = crypto.randomUUID();
+    reply.setCookie("twitch_bot_oauth_state", state, {
+      path: "/",
+      httpOnly: true,
+      signed: true,
+      secure: milesandmorebotEnv.appUrl.startsWith("https"),
+      sameSite: "lax",
+      maxAge: 600,
+    });
     const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
     const redirectUri = new URL("/api/twitch/bot-callback", url.origin).toString();
     const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
@@ -373,16 +412,23 @@ export function createServer() {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("scope", "channel:bot");
     authUrl.searchParams.set("force_verify", "true");
+    authUrl.searchParams.set("state", state);
     return reply.redirect(authUrl.toString());
   });
 
   app.get("/api/twitch/bot-callback", async (request, reply) => {
-    const qs = request.query as { code?: string; error?: string };
+    const qs = request.query as { code?: string; error?: string; state?: string };
     if (qs.error) {
       return error(reply, qs.error, 400);
     }
     if (!qs.code) {
       return error(reply, "Missing code parameter", 400);
+    }
+    const cookieValue = request.cookies.twitch_bot_oauth_state;
+    const unsigned = cookieValue ? request.unsignCookie(cookieValue) : { valid: false, value: null };
+    reply.clearCookie("twitch_bot_oauth_state", { path: "/" });
+    if (!unsigned.valid || unsigned.value !== qs.state) {
+      return error(reply, "Invalid or missing OAuth state", 403);
     }
 
     const botClientId = milesandmorebotEnv.twitchBotClientId;

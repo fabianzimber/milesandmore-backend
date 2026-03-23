@@ -178,8 +178,15 @@ exports.repositories = {
             await pipeline.exec();
         },
         async deleteAll() {
-            const flights = await exports.repositories.flights.getRecent(1000);
-            await Promise.all(flights.map((flight) => exports.repositories.flights.delete(flight.id)));
+            let flights = await exports.repositories.flights.getRecent(1000);
+            while (flights.length > 0) {
+                await Promise.all(flights.map((flight) => exports.repositories.flights.delete(flight.id)));
+                flights = await exports.repositories.flights.getRecent(1000);
+            }
+        },
+        async tryAcquireRewardLock(flightId) {
+            const result = await getRedis().set(key("reward", "lock", flightId), "1", { nx: true, ex: 3600 });
+            return !!result;
         },
     },
     participants: {
@@ -187,10 +194,13 @@ exports.repositories = {
             const redis = getRedis();
             const id = await nextId("participant");
             const participant = { ...data, id };
+            const acquired = await redis.set(key("participant", "flightUser", participant.flight_id, participant.user_id), id, { nx: true });
+            if (!acquired) {
+                return null;
+            }
             const pipeline = redis.pipeline();
             pipeline.set(key("participant", id), participant);
             pipeline.set(key("participant", "hash", participant.participant_hash), id);
-            pipeline.set(key("participant", "flightUser", participant.flight_id, participant.user_id), id);
             pipeline.zadd(key("participants", "flight", participant.flight_id), {
                 score: participant.joined_at,
                 member: String(id),
@@ -347,17 +357,15 @@ exports.repositories = {
             if (!wasSet) {
                 return false;
             }
-            const currentCount = await exports.repositories.userCountries.countByUser(userId);
-            const pipeline = getRedis().pipeline();
-            pipeline.zadd(key("userCountries", "user", userId), {
+            await getRedis().zadd(key("userCountries", "user", userId), {
                 score: record.unlocked_at,
                 member: countryCode,
             });
-            pipeline.zadd(key("leaderboard", "countries"), {
-                score: currentCount + 1,
+            const actualCount = await getRedis().zcard(key("userCountries", "user", userId));
+            await getRedis().zadd(key("leaderboard", "countries"), {
+                score: actualCount,
                 member: userId,
             });
-            await pipeline.exec();
             return true;
         },
         async getByUser(userId) {
@@ -389,15 +397,14 @@ exports.repositories = {
     channels: {
         async add(name, userId) {
             const record = { name, user_id: userId, banned: 0 };
-            const exists = await getRedis().exists(key("channel", name));
-            if (exists) {
+            const wasSet = await getRedis().set(key("channel", name), record, { nx: true });
+            if (!wasSet) {
                 const error = new Error("Duplicate channel");
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 error.code = "ER_DUP_ENTRY";
                 throw error;
             }
             const pipeline = getRedis().pipeline();
-            pipeline.set(key("channel", name), record);
             pipeline.set(key("channelByUser", userId), name);
             pipeline.sadd(key("channels"), name);
             await pipeline.exec();
@@ -478,6 +485,13 @@ exports.repositories = {
         },
         async markRestarted(timestamp = Date.now()) {
             await getRedis().set(key("runtimeConfig", "botRestartedAt"), timestamp);
+        },
+        async getNextTokenRefreshAt() {
+            const value = await getRedis().get(key("runtimeConfig", "nextTokenRefreshAt"));
+            return value ? Number(value) : null;
+        },
+        async setNextTokenRefreshAt(timestamp) {
+            await getRedis().set(key("runtimeConfig", "nextTokenRefreshAt"), timestamp);
         },
     },
     cache: {

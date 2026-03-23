@@ -241,20 +241,35 @@ export const repositories = {
     },
 
     async deleteAll(): Promise<void> {
-      const flights = await repositories.flights.getRecent(1000);
-      await Promise.all(flights.map((flight) => repositories.flights.delete(flight.id)));
+      let flights = await repositories.flights.getRecent(1000);
+      while (flights.length > 0) {
+        await Promise.all(flights.map((flight) => repositories.flights.delete(flight.id)));
+        flights = await repositories.flights.getRecent(1000);
+      }
+    },
+
+    async tryAcquireRewardLock(flightId: number): Promise<boolean> {
+      const result = await getRedis().set(key("reward", "lock", flightId), "1", { nx: true, ex: 3600 });
+      return !!result;
     },
   },
 
   participants: {
-    async create(data: Omit<Participant, "id">): Promise<Participant> {
+    async create(data: Omit<Participant, "id">): Promise<Participant | null> {
       const redis = getRedis();
       const id = await nextId("participant");
       const participant: Participant = { ...data, id };
+      const acquired = await redis.set(
+        key("participant", "flightUser", participant.flight_id, participant.user_id),
+        id,
+        { nx: true },
+      );
+      if (!acquired) {
+        return null;
+      }
       const pipeline = redis.pipeline();
       pipeline.set(key("participant", id), participant);
       pipeline.set(key("participant", "hash", participant.participant_hash), id);
-      pipeline.set(key("participant", "flightUser", participant.flight_id, participant.user_id), id);
       pipeline.zadd(key("participants", "flight", participant.flight_id), {
         score: participant.joined_at,
         member: String(id),
@@ -425,17 +440,15 @@ export const repositories = {
       if (!wasSet) {
         return false;
       }
-      const currentCount = await repositories.userCountries.countByUser(userId);
-      const pipeline = getRedis().pipeline();
-      pipeline.zadd(key("userCountries", "user", userId), {
+      await getRedis().zadd(key("userCountries", "user", userId), {
         score: record.unlocked_at,
         member: countryCode,
       });
-      pipeline.zadd(key("leaderboard", "countries"), {
-        score: currentCount + 1,
+      const actualCount = await getRedis().zcard(key("userCountries", "user", userId));
+      await getRedis().zadd(key("leaderboard", "countries"), {
+        score: actualCount,
         member: userId,
       });
-      await pipeline.exec();
       return true;
     },
 
@@ -474,15 +487,14 @@ export const repositories = {
   channels: {
     async add(name: string, userId: string): Promise<ChannelRecord> {
       const record: ChannelRecord = { name, user_id: userId, banned: 0 };
-      const exists = await getRedis().exists(key("channel", name));
-      if (exists) {
+      const wasSet = await getRedis().set(key("channel", name), record, { nx: true });
+      if (!wasSet) {
         const error = new Error("Duplicate channel");
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (error as any).code = "ER_DUP_ENTRY";
         throw error;
       }
       const pipeline = getRedis().pipeline();
-      pipeline.set(key("channel", name), record);
       pipeline.set(key("channelByUser", userId), name);
       pipeline.sadd(key("channels"), name);
       await pipeline.exec();
@@ -579,6 +591,13 @@ export const repositories = {
     },
     async markRestarted(timestamp = Date.now()): Promise<void> {
       await getRedis().set(key("runtimeConfig", "botRestartedAt"), timestamp);
+    },
+    async getNextTokenRefreshAt(): Promise<number | null> {
+      const value = await getRedis().get<number>(key("runtimeConfig", "nextTokenRefreshAt"));
+      return value ? Number(value) : null;
+    },
+    async setNextTokenRefreshAt(timestamp: number): Promise<void> {
+      await getRedis().set(key("runtimeConfig", "nextTokenRefreshAt"), timestamp);
     },
   },
 

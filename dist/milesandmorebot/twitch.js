@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.refreshBotAccessToken = refreshBotAccessToken;
 exports.assertValidBotCredentials = assertValidBotCredentials;
 exports.getUsersByLogin = getUsersByLogin;
 exports.getUserByLogin = getUserByLogin;
@@ -58,6 +59,7 @@ const TWITCH_OAUTH_BASE = "https://id.twitch.tv/oauth2";
 const REQUIRED_BOT_SCOPES = ["user:bot", "user:read:chat", "user:write:chat", "user:manage:whispers"];
 let botCredentialCache = null;
 const BOT_CREDENTIAL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const TOKEN_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000; // 3 hours
 const userCache = new Map();
 const USER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const USER_CACHE_MAX_SIZE = 500;
@@ -82,6 +84,58 @@ function pruneUserCache() {
 }
 function clearBotCredentialCache() {
     botCredentialCache = null;
+}
+async function refreshBotAccessToken() {
+    const credentials = await getPreferredBotCredentials();
+    if (!credentials || !credentials.refreshToken) {
+        await logger_1.milesandmorebotLogger.error("[TokenRefresh] Kein Refresh-Token vorhanden — Refresh nicht moeglich.");
+        return false;
+    }
+    const botClientSecret = (env_1.milesandmorebotEnv.twitchBotClientSecret || "").trim();
+    if (!botClientSecret) {
+        await logger_1.milesandmorebotLogger.error("[TokenRefresh] TWITCH_BOT_CLIENT_SECRET fehlt — Refresh nicht moeglich.");
+        return false;
+    }
+    try {
+        const params = new URLSearchParams({
+            client_id: credentials.botClientId,
+            client_secret: botClientSecret,
+            grant_type: "refresh_token",
+            refresh_token: credentials.refreshToken,
+        });
+        const response = await fetch(`${TWITCH_OAUTH_BASE}/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: params.toString(),
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            await logger_1.milesandmorebotLogger.error(`[TokenRefresh] Twitch refresh failed: ${response.status} ${text}`);
+            return false;
+        }
+        const payload = (await response.json());
+        const refreshedCredentials = {
+            ...credentials,
+            accessToken: normalizeAccessToken(payload.access_token),
+            refreshToken: normalizeRefreshToken(payload.refresh_token),
+            scopes: payload.scope || credentials.scopes,
+            source: "redis",
+            updatedAt: Date.now(),
+        };
+        // Validate the new token immediately
+        const validated = await validateBotToken(refreshedCredentials.botClientId, refreshedCredentials.accessToken);
+        await persistBotCredentials(refreshedCredentials, validated);
+        clearBotCredentialCache();
+        // Schedule next refresh
+        const nextRefreshAt = Date.now() + TOKEN_REFRESH_INTERVAL_MS;
+        await storage_1.repositories.runtimeConfig.setNextTokenRefreshAt(nextRefreshAt);
+        await logger_1.milesandmorebotLogger.info(`[TokenRefresh] Token erfolgreich erneuert. Naechster Refresh: ${new Date(nextRefreshAt).toISOString()}`);
+        return true;
+    }
+    catch (error) {
+        await logger_1.milesandmorebotLogger.error(`[TokenRefresh] Refresh fehlgeschlagen: ${error instanceof Error ? error.message : "unknown"}`);
+        return false;
+    }
 }
 function normalizeAccessToken(token) {
     return token.trim().replace(/^oauth:/i, "");
@@ -239,14 +293,32 @@ async function ensureValidBotCredentials() {
         return { credentials: botCredentialCache.credentials, validated: botCredentialCache.validated };
     }
     const credentials = await getBotCredentialInput();
-    const validated = await validateBotToken(credentials.botClientId, credentials.accessToken);
-    if (credentials.source === "redis") {
-        const persisted = await persistBotCredentials(credentials, validated);
-        botCredentialCache = { credentials: persisted, validated, expiresAt: now + BOT_CREDENTIAL_CACHE_TTL_MS };
-        return { credentials: persisted, validated };
+    try {
+        const validated = await validateBotToken(credentials.botClientId, credentials.accessToken);
+        if (credentials.source === "redis") {
+            const persisted = await persistBotCredentials(credentials, validated);
+            botCredentialCache = { credentials: persisted, validated, expiresAt: now + BOT_CREDENTIAL_CACHE_TTL_MS };
+            return { credentials: persisted, validated };
+        }
+        botCredentialCache = { credentials, validated, expiresAt: now + BOT_CREDENTIAL_CACHE_TTL_MS };
+        return { credentials, validated };
     }
-    botCredentialCache = { credentials, validated, expiresAt: now + BOT_CREDENTIAL_CACHE_TTL_MS };
-    return { credentials, validated };
+    catch (validationError) {
+        // Reactive refresh: if validation fails and we have a refresh token, try refreshing
+        if (credentials.refreshToken) {
+            await logger_1.milesandmorebotLogger.warn("[TokenRefresh] Token-Validierung fehlgeschlagen, versuche Refresh...");
+            const refreshed = await refreshBotAccessToken();
+            if (refreshed) {
+                // Retry validation with the new token
+                const freshCredentials = await getBotCredentialInput();
+                const freshValidated = await validateBotToken(freshCredentials.botClientId, freshCredentials.accessToken);
+                const persisted = await persistBotCredentials(freshCredentials, freshValidated);
+                botCredentialCache = { credentials: persisted, validated: freshValidated, expiresAt: now + BOT_CREDENTIAL_CACHE_TTL_MS };
+                return { credentials: persisted, validated: freshValidated };
+            }
+        }
+        throw validationError;
+    }
 }
 async function inspectBotCredentials() {
     const appSnapshot = getAppCredentialSnapshot();
@@ -420,6 +492,11 @@ async function restartBotRuntime() {
     await syncManagedIrcChannels();
     const now = Date.now();
     await Promise.all([storage_1.repositories.status.restart(now), storage_1.repositories.runtimeConfig.markRestarted(now)]);
+    // Seed next token refresh time if not already scheduled
+    const existingRefreshAt = await storage_1.repositories.runtimeConfig.getNextTokenRefreshAt();
+    if (!existingRefreshAt || existingRefreshAt <= now) {
+        await storage_1.repositories.runtimeConfig.setNextTokenRefreshAt(now + TOKEN_REFRESH_INTERVAL_MS);
+    }
     await logger_1.milesandmorebotLogger.info("[Runtime] bot runtime restarted");
     return {
         appClientId: inspection.appClientId,
