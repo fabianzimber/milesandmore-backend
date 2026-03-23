@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createServer = createServer;
 const fastify_1 = __importDefault(require("fastify"));
+const cookie_1 = __importDefault(require("@fastify/cookie"));
 const core_1 = require("./milesandmorebot/core");
 const env_1 = require("./milesandmorebot/env");
 const logger_1 = require("./milesandmorebot/logger");
@@ -12,6 +13,9 @@ const storage_1 = require("./milesandmorebot/storage");
 const twitch_1 = require("./milesandmorebot/twitch");
 const irc_1 = require("./milesandmorebot/irc");
 const scheduler_1 = require("./milesandmorebot/scheduler");
+function escapeHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 function parseJsonBody(request) {
     const body = request.body;
     if (typeof body === "string") {
@@ -48,19 +52,21 @@ async function requireAdmin(reply, request) {
 }
 function createServer() {
     const app = (0, fastify_1.default)({ logger: true });
+    app.register(cookie_1.default, { secret: env_1.milesandmorebotEnv.authSecret });
     app.addContentTypeParser("application/json", { parseAs: "string" }, (_request, body, done) => {
         done(null, body);
     });
     app.addHook("onRequest", async (request, reply) => {
         const origin = request.headers.origin;
-        if (origin && env_1.milesandmorebotEnv.appUrl && origin !== env_1.milesandmorebotEnv.appUrl) {
-            reply.header("access-control-allow-origin", env_1.milesandmorebotEnv.appUrl);
-        }
-        else if (origin) {
-            reply.header("access-control-allow-origin", origin);
+        const allowedOrigin = env_1.milesandmorebotEnv.frontendUrl || env_1.milesandmorebotEnv.appUrl;
+        if (origin) {
+            if (!allowedOrigin || origin === allowedOrigin || origin === env_1.milesandmorebotEnv.appUrl) {
+                reply.header("access-control-allow-origin", origin);
+            }
         }
         reply.header("access-control-allow-headers", "content-type,x-internal-job-secret,x-simlink-secret");
         reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+        reply.header("access-control-allow-credentials", "true");
         if (request.method === "OPTIONS") {
             return reply.code(204).send();
         }
@@ -72,7 +78,8 @@ function createServer() {
     app.get("/flights/:id/participants", async (request) => (0, core_1.getFlightParticipants)(Number(request.params.id)));
     app.get("/flights/:id/seats", async (request) => (0, core_1.getOccupiedSeats)(Number(request.params.id)));
     app.get("/participant/:hash", async (request, reply) => {
-        const participant = await (0, core_1.getParticipantByHash)(request.params.hash);
+        const hash = request.params.hash;
+        const participant = await (0, core_1.getParticipantByHash)(hash);
         if (!participant) {
             return error(reply, "Participant not found", 404);
         }
@@ -81,24 +88,7 @@ function createServer() {
     app.get("/channels", async (request, reply) => {
         if (!(await requireAdmin(reply, request)))
             return;
-        const channels = await storage_1.repositories.managedChannels.getAll();
-        const authorizeUrl = new URL("https://id.twitch.tv/oauth2/authorize");
-        authorizeUrl.searchParams.set("client_id", env_1.milesandmorebotEnv.twitchAppClientId);
-        authorizeUrl.searchParams.set("redirect_uri", `${env_1.milesandmorebotEnv.appUrl}/api/twitch/callback`);
-        authorizeUrl.searchParams.set("response_type", "code");
-        authorizeUrl.searchParams.set("scope", "channel:bot");
-        authorizeUrl.searchParams.set("force_verify", "true");
-        const authorizeLink = authorizeUrl.toString();
-        const enriched = await Promise.all(channels.map(async (ch) => {
-            const sub = await storage_1.repositories.eventSubSubscriptions.get(ch.channel_name);
-            const verified = sub !== null;
-            return {
-                ...ch,
-                oauth_status: verified ? "verified" : "pending",
-                authorize_url: verified ? undefined : authorizeLink,
-            };
-        }));
-        return enriched;
+        return storage_1.repositories.managedChannels.getAll();
     });
     app.post("/channels", async (request, reply) => {
         if (!(await requireAdmin(reply, request)))
@@ -166,7 +156,12 @@ function createServer() {
     app.post("/flights", async (request, reply) => {
         if (!(await requireAdmin(reply, request)))
             return;
-        return (0, core_1.createFlight)(parseJsonBody(request));
+        try {
+            return await (0, core_1.createFlight)(parseJsonBody(request));
+        }
+        catch (cause) {
+            return error(reply, cause instanceof Error ? cause.message : "Flight konnte nicht erstellt werden.");
+        }
     });
     app.post("/flights/:id/status", async (request, reply) => {
         if (!(await requireAdmin(reply, request)))
@@ -252,37 +247,7 @@ function createServer() {
             return error(reply, cause instanceof Error ? cause.message : "Failed to run boarding close job", 500);
         }
     });
-    app.post("/api/twitch/eventsub", async (request, reply) => {
-        const rawBody = typeof request.body === "string" ? request.body : JSON.stringify(request.body || {});
-        const headers = new Headers(Object.entries(request.headers).filter(([, value]) => typeof value === "string"));
-        if (!(0, twitch_1.verifyEventSubSignature)(headers, rawBody) || !(0, twitch_1.isFreshEventSubTimestamp)(headers)) {
-            return error(reply, "Invalid Twitch EventSub signature", 401);
-        }
-        const payload = JSON.parse(rawBody);
-        const messageType = headers.get("twitch-eventsub-message-type");
-        if (messageType === "webhook_callback_verification") {
-            return reply.type("text/plain").send(payload.challenge || "");
-        }
-        if (messageType === "revocation") {
-            await logger_1.milesandmorebotLogger.warn(`[EventSub] subscription revoked ${payload.subscription?.id || "unknown"}`);
-            return { ok: true };
-        }
-        const messageId = headers.get("twitch-eventsub-message-id");
-        if (!messageId) {
-            return error(reply, "Missing Twitch message id", 400);
-        }
-        const firstSeen = await storage_1.repositories.processedEvents.markProcessed(messageId);
-        if (!firstSeen) {
-            return { duplicate: true };
-        }
-        const chatMessage = (0, twitch_1.normalizeEventSubChatMessage)(payload);
-        if (!chatMessage) {
-            return { ignored: true };
-        }
-        await storage_1.repositories.status.setLastEventAt();
-        await (0, core_1.handleChatMessage)(chatMessage);
-        return { ok: true };
-    });
+    // ── Streamer OAuth ────────────────────────────────────────────────
     app.get("/api/twitch/authorize", async (request, reply) => {
         const url = new URL(`${env_1.milesandmorebotEnv.appUrl}${request.url}`);
         const redirectUri = new URL("/api/twitch/callback", url.origin).toString();
@@ -330,11 +295,8 @@ function createServer() {
         try {
             const currentChannels = await storage_1.repositories.managedChannels.getAll();
             if (currentChannels.find((channel) => channel.channel_name === channelLogin)) {
-                await logger_1.milesandmorebotLogger.info(`Streamer ${channelLogin} authorized channel:bot. Re-subscribing explicitly...`);
-                const success = await (0, twitch_1.createChatMessageSubscription)(channelLogin);
-                if (success) {
-                    await (0, irc_1.partIrcChannel)(channelLogin);
-                }
+                await logger_1.milesandmorebotLogger.info(`Streamer ${channelLogin} authorized channel:bot. Ensuring IRC connection...`);
+                await (0, irc_1.joinIrcChannel)(channelLogin);
             }
             else {
                 await logger_1.milesandmorebotLogger.info(`Streamer ${channelLogin} authorized channel:bot, but channel is not actively managed by bot.`);
@@ -342,7 +304,7 @@ function createServer() {
             return reply.type("text/html").send(`<html>
   <body>
     <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
-    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als \"Chat Bot\" in deinem Kanal <strong>${channelLogin}</strong>!</p>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${escapeHtml(channelLogin)}</strong>!</p>
     <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
   </body>
 </html>`);
@@ -350,6 +312,85 @@ function createServer() {
         catch (cause) {
             const message = cause instanceof Error ? cause.message : "Unknown error";
             await logger_1.milesandmorebotLogger.error(`Error processing callback for ${channelLogin}: ${message}`);
+            return error(reply, "Internal Server Error", 500);
+        }
+    });
+    // Separate bot authorization flow using the BOT client ID.
+    // Broadcasters must authorize channel:bot against the bot's own application
+    // so Twitch associates the permission with the bot's client ID.
+    app.get("/api/twitch/bot-authorize", async (request, reply) => {
+        const botClientId = env_1.milesandmorebotEnv.twitchBotClientId;
+        if (!botClientId) {
+            return error(reply, "TWITCH_BOT_CLIENT_ID is not configured", 500);
+        }
+        const url = new URL(`${env_1.milesandmorebotEnv.appUrl}${request.url}`);
+        const redirectUri = new URL("/api/twitch/bot-callback", url.origin).toString();
+        const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
+        authUrl.searchParams.set("client_id", botClientId);
+        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("response_type", "code");
+        authUrl.searchParams.set("scope", "channel:bot");
+        authUrl.searchParams.set("force_verify", "true");
+        return reply.redirect(authUrl.toString());
+    });
+    app.get("/api/twitch/bot-callback", async (request, reply) => {
+        const qs = request.query;
+        if (qs.error) {
+            return error(reply, qs.error, 400);
+        }
+        if (!qs.code) {
+            return error(reply, "Missing code parameter", 400);
+        }
+        const botClientId = env_1.milesandmorebotEnv.twitchBotClientId;
+        const botClientSecret = env_1.milesandmorebotEnv.twitchBotClientSecret;
+        if (!botClientId || !botClientSecret) {
+            return error(reply, "TWITCH_BOT_CLIENT_ID and TWITCH_BOT_CLIENT_SECRET must be configured", 500);
+        }
+        const url = new URL(`${env_1.milesandmorebotEnv.appUrl}${request.url}`);
+        const redirectUri = new URL("/api/twitch/bot-callback", url.origin).toString();
+        const tokenResponse = await fetch("https://id.twitch.tv/oauth2/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                client_id: botClientId,
+                client_secret: botClientSecret,
+                code: qs.code,
+                grant_type: "authorization_code",
+                redirect_uri: redirectUri,
+            }),
+        });
+        if (!tokenResponse.ok) {
+            return error(reply, "Failed to exchange token", 400);
+        }
+        const tokenData = (await tokenResponse.json());
+        const validateResponse = await fetch("https://id.twitch.tv/oauth2/validate", {
+            headers: { Authorization: `OAuth ${tokenData.access_token}` },
+        });
+        if (!validateResponse.ok) {
+            return error(reply, "Failed to validate token", 400);
+        }
+        const validateData = (await validateResponse.json());
+        const channelLogin = validateData.login;
+        try {
+            await logger_1.milesandmorebotLogger.info(`[BotAuth] Streamer ${channelLogin} authorized channel:bot for bot application.`);
+            const currentChannels = await storage_1.repositories.managedChannels.getAll();
+            if (currentChannels.find((channel) => channel.channel_name === channelLogin)) {
+                await (0, irc_1.joinIrcChannel)(channelLogin);
+            }
+            else {
+                await logger_1.milesandmorebotLogger.info(`[BotAuth] Channel ${channelLogin} is not actively managed.`);
+            }
+            return reply.type("text/html").send(`<html>
+  <body>
+    <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${escapeHtml(channelLogin)}</strong>!</p>
+    <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
+  </body>
+</html>`);
+        }
+        catch (cause) {
+            const message = cause instanceof Error ? cause.message : "Unknown error";
+            await logger_1.milesandmorebotLogger.error(`[BotAuth] Error processing bot-callback for ${channelLogin}: ${message}`);
             return error(reply, "Internal Server Error", 500);
         }
     });

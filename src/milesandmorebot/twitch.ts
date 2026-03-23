@@ -1,5 +1,5 @@
 import type { BotRuntimeSettings } from "../lib/types";
-import { assertEnv, milesandmorebotEnv } from "./env";
+import { milesandmorebotEnv } from "./env";
 import { milesandmorebotLogger } from "./logger";
 import { repositories } from "./storage";
 
@@ -14,12 +14,6 @@ type TwitchValidateResponse = {
   login: string;
   user_id: string;
   scopes: string[];
-};
-
-type TwitchAppAccessTokenResponse = {
-  access_token: string;
-  expires_in: number;
-  token_type: string;
 };
 
 type BotRuntimeCredentials = {
@@ -66,13 +60,6 @@ const TWITCH_API_BASE = "https://api.twitch.tv/helix";
 const TWITCH_OAUTH_BASE = "https://id.twitch.tv/oauth2";
 const REQUIRED_BOT_SCOPES = ["user:bot", "user:read:chat", "user:write:chat", "user:manage:whispers"] as const;
 
-let appAccessTokenCache:
-  | {
-      token: string;
-      expiresAt: number;
-    }
-  | null = null;
-
 let botCredentialCache: {
   credentials: BotRuntimeCredentials;
   validated: TwitchValidateResponse;
@@ -100,10 +87,6 @@ function pruneUserCache(): void {
       removed++;
     }
   }
-}
-
-function clearAppAccessTokenCache() {
-  appAccessTokenCache = null;
 }
 
 function clearBotCredentialCache() {
@@ -249,52 +232,10 @@ async function getAuthHeaders(extra?: HeadersInit): Promise<HeadersInit> {
   };
 }
 
-async function getAppAccessToken(): Promise<string> {
-  const now = Date.now();
-  if (appAccessTokenCache && appAccessTokenCache.expiresAt > now + 60_000) {
-    return appAccessTokenCache.token;
-  }
-
-  const { clientId, clientSecret } = getAppCredentialSnapshot();
-  const response = await fetch(`${TWITCH_OAUTH_BASE}/token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: assertEnv("TWITCH_APP_CLIENT_ID", clientId),
-      client_secret: assertEnv("TWITCH_APP_CLIENT_SECRET", clientSecret),
-      grant_type: "client_credentials",
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Twitch App-Token konnte nicht erstellt werden: ${response.status} ${text}`);
-  }
-
-  const payload = (await response.json()) as TwitchAppAccessTokenResponse;
-  appAccessTokenCache = {
-    token: payload.access_token,
-    expiresAt: now + payload.expires_in * 1000,
-  };
-
-  return payload.access_token;
-}
-
-async function getAppAuthHeaders(extra?: HeadersInit): Promise<HeadersInit> {
-  const { clientId } = getAppCredentialSnapshot();
-  return {
-    "Client-Id": assertEnv("TWITCH_APP_CLIENT_ID", clientId),
-    Authorization: `Bearer ${await getAppAccessToken()}`,
-    ...extra,
-  };
-}
-
-async function twitchFetch<T>(path: string, init?: RequestInit, authMode: "bot" | "app" = "bot"): Promise<T> {
+async function twitchFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${TWITCH_API_BASE}${path}`, {
     ...init,
-    headers: authMode === "app" ? await getAppAuthHeaders(init?.headers) : await getAuthHeaders(init?.headers),
+    headers: await getAuthHeaders(init?.headers),
   });
 
   if (!response.ok) {
@@ -450,7 +391,7 @@ export async function getUsersByLogin(logins: string[]): Promise<TwitchUser[]> {
     return [];
   }
   const query = logins.map((login) => `login=${encodeURIComponent(login)}`).join("&");
-  const response = await twitchFetch<{ data: TwitchUser[] }>(`/users?${query}`, undefined, "app");
+  const response = await twitchFetch<{ data: TwitchUser[] }>(`/users?${query}`);
   return response.data || [];
 }
 
@@ -483,29 +424,13 @@ export async function sendChatMessage(channelName: string, message: string): Pro
     message,
   };
 
-  try {
-    // Attempt with App Access Token to get the Chat Bot Badge (requires streamer to have authorized the bot)
-    await twitchFetch<{ data: Array<{ message_id: string }> }>("/chat/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    }, "app");
-  } catch (error: unknown) {
-    if (error instanceof TwitchRequestError && (error.status === 403 || error.status === 401)) {
-      // Streamer hasn't authorized channel:bot. Fall back to the bot's own User Access Token.
-      await twitchFetch<{ data: Array<{ message_id: string }> }>("/chat/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      }, "bot");
-    } else {
-      throw error;
-    }
-  }
+  await twitchFetch<{ data: Array<{ message_id: string }> }>("/chat/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 
   await milesandmorebotLogger.chat(`[OUT] #${channelName}: ${message}`);
 }
@@ -522,7 +447,7 @@ export async function sendWhisper(toUserId: string, message: string): Promise<vo
 
 export async function measurePing(): Promise<number> {
   const start = performance.now();
-  await twitchFetch<{ data: TwitchUser[] }>("/users?login=twitchdev", undefined, "app");
+  await twitchFetch<{ data: TwitchUser[] }>("/users?login=twitchdev");
   return Math.round(performance.now() - start);
 }
 
@@ -555,7 +480,6 @@ export async function getBotRuntimeSettings(): Promise<BotRuntimeSettings> {
 export async function restartBotRuntime(): Promise<BotRuntimeSettings> {
   await repositories.runtimeConfig.clearBotCredentials();
   await seedRuntimeBotCredentialsFromEnv();
-  clearAppAccessTokenCache();
   clearBotCredentialCache();
 
   const { resetIrcClient } = await import("./irc");
