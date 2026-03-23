@@ -164,6 +164,12 @@ export const repositories = {
       return null;
     },
 
+    async getAllByChannelAndStatus(channel: string, statuses: string[]): Promise<Flight[]> {
+      const ids = await getIdsFromSortedSet(key("flights", "channel", channel));
+      const flights = await loadMany(ids, (id) => repositories.flights.getById(Number(id)));
+      return flights.filter((flight) => statuses.includes(flight.status));
+    },
+
     async getByStatus(status: string): Promise<Flight[]> {
       const ids = await getIdsFromSortedSet(key("flights", "status", status));
       return loadMany(ids, (id) => repositories.flights.getById(Number(id)));

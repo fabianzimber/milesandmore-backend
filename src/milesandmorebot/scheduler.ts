@@ -85,7 +85,7 @@ export async function publishFlightJob(
     headers: {
       "x-internal-job-secret": milesandmorebotEnv.internalJobSecret,
     },
-    deduplicationId: `${action}:${body.flightId}:${body.channelName}:${body.lifecycleVersion || 0}:${Date.now()}`,
+    deduplicationId: `${action}-${body.flightId}-${body.channelName}-${body.lifecycleVersion || 0}-${Date.now()}`,
     label: `milesandmorebot-${action}`,
   });
 }

@@ -240,6 +240,19 @@ export async function createFlight(
     throw new Error("There is already an active flight in this channel");
   }
 
+  // Clean up old completed/cancelled/aborted flights in this channel.
+  // Participant records are deleted so stale data (e.g. boarding status) does
+  // not bleed into the new flight. Awarded miles are stored separately in
+  // userMiles and are not affected.
+  const oldFlights = await repositories.flights.getAllByChannelAndStatus(
+    flightData.channel_name,
+    ["completed", "cancelled", "aborted"],
+  );
+  for (const old of oldFlights) {
+    await repositories.participants.deleteByFlight(old.id);
+    await repositories.flights.delete(old.id);
+  }
+
   const depCoords = flightData.dep_lat != null
     ? { lat: flightData.dep_lat, lon: flightData.dep_lon! }
     : getAirportCoords(flightData.icao_from);
