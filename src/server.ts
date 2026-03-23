@@ -16,7 +16,6 @@ import {
   getOccupiedSeats,
   getParticipantByHash,
   getUserStats,
-  handleChatMessage,
   handleSimLinkIngest,
   removeManagedChannel,
   resumeBoarding,
@@ -29,15 +28,10 @@ import { milesandmorebotEnv } from "./milesandmorebot/env";
 import { getRecentBotLogs, milesandmorebotLogger } from "./milesandmorebot/logger";
 import { repositories } from "./milesandmorebot/storage";
 import {
-  createChatMessageSubscription,
-  deleteChatMessageSubscription,
   getBotRuntimeSettings,
-  isFreshEventSubTimestamp,
-  normalizeEventSubChatMessage,
   restartBotRuntime,
-  verifyEventSubSignature,
 } from "./milesandmorebot/twitch";
-import { partIrcChannel } from "./milesandmorebot/irc";
+import { joinIrcChannel } from "./milesandmorebot/irc";
 import { verifyQStashRequest } from "./milesandmorebot/scheduler";
 import type { Flight, ScheduledFlightJob } from "./lib/types";
 
@@ -118,28 +112,7 @@ export function createServer() {
 
   app.get("/channels", async (request, reply) => {
     if (!(await requireAdmin(reply, request))) return;
-    const channels = await repositories.managedChannels.getAll();
-
-    const authorizeUrl = new URL("https://id.twitch.tv/oauth2/authorize");
-    authorizeUrl.searchParams.set("client_id", milesandmorebotEnv.twitchAppClientId);
-    authorizeUrl.searchParams.set("redirect_uri", `${milesandmorebotEnv.appUrl}/api/twitch/callback`);
-    authorizeUrl.searchParams.set("response_type", "code");
-    authorizeUrl.searchParams.set("scope", "channel:bot");
-    authorizeUrl.searchParams.set("force_verify", "true");
-    const authorizeLink = authorizeUrl.toString();
-
-    const enriched = await Promise.all(
-      channels.map(async (ch) => {
-        const sub = await repositories.eventSubSubscriptions.get(ch.channel_name);
-        const verified = sub !== null;
-        return {
-          ...ch,
-          oauth_status: verified ? "verified" as const : "pending" as const,
-          authorize_url: verified ? undefined : authorizeLink,
-        };
-      }),
-    );
-    return enriched;
+    return repositories.managedChannels.getAll();
   });
   app.post("/channels", async (request, reply) => {
     if (!(await requireAdmin(reply, request))) return;
@@ -291,49 +264,6 @@ export function createServer() {
     }
   });
 
-  app.post("/api/twitch/eventsub", async (request, reply) => {
-    const rawBody = typeof request.body === "string" ? request.body : JSON.stringify(request.body || {});
-    const headers = new Headers(Object.entries(request.headers).filter(([, value]) => typeof value === "string") as Array<[string, string]>);
-    if (!verifyEventSubSignature(headers, rawBody) || !isFreshEventSubTimestamp(headers)) {
-      return error(reply, "Invalid Twitch EventSub signature", 401);
-    }
-
-    const payload = JSON.parse(rawBody) as {
-      challenge?: string;
-      event?: Record<string, unknown>;
-      subscription?: { id: string; type: string; status: string };
-    };
-
-    const messageType = headers.get("twitch-eventsub-message-type");
-    if (messageType === "webhook_callback_verification") {
-      return reply.type("text/plain").send(payload.challenge || "");
-    }
-
-    if (messageType === "revocation") {
-      await milesandmorebotLogger.warn(`[EventSub] subscription revoked ${payload.subscription?.id || "unknown"}`);
-      return { ok: true };
-    }
-
-    const messageId = headers.get("twitch-eventsub-message-id");
-    if (!messageId) {
-      return error(reply, "Missing Twitch message id", 400);
-    }
-
-    const firstSeen = await repositories.processedEvents.markProcessed(messageId);
-    if (!firstSeen) {
-      return { duplicate: true };
-    }
-
-    const chatMessage = normalizeEventSubChatMessage(payload as Parameters<typeof normalizeEventSubChatMessage>[0]);
-    if (!chatMessage) {
-      return { ignored: true };
-    }
-
-    await repositories.status.setLastEventAt();
-    await handleChatMessage(chatMessage);
-    return { ok: true };
-  });
-
   app.get("/api/twitch/authorize", async (request, reply) => {
     const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
     const redirectUri = new URL("/api/twitch/callback", url.origin).toString();
@@ -389,12 +319,9 @@ export function createServer() {
       const currentChannels = await repositories.managedChannels.getAll();
       if (currentChannels.find((channel) => channel.channel_name === channelLogin)) {
         await milesandmorebotLogger.info(
-          `Streamer ${channelLogin} authorized channel:bot. Re-subscribing explicitly...`,
+          `Streamer ${channelLogin} authorized channel:bot. Ensuring IRC connection...`,
         );
-        const success = await createChatMessageSubscription(channelLogin);
-        if (success) {
-          await partIrcChannel(channelLogin);
-        }
+        await joinIrcChannel(channelLogin);
       } else {
         await milesandmorebotLogger.info(
           `Streamer ${channelLogin} authorized channel:bot, but channel is not actively managed by bot.`,
@@ -404,7 +331,7 @@ export function createServer() {
       return reply.type("text/html").send(`<html>
   <body>
     <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
-    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als \"Chat Bot\" in deinem Kanal <strong>${channelLogin}</strong>!</p>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${channelLogin}</strong>!</p>
     <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
   </body>
 </html>`);
@@ -482,18 +409,15 @@ export function createServer() {
 
     try {
       await milesandmorebotLogger.info(
-        `[BotAuth] Streamer ${channelLogin} authorized channel:bot for bot application. Creating EventSub subscription...`,
+        `[BotAuth] Streamer ${channelLogin} authorized channel:bot for bot application.`,
       );
 
       const currentChannels = await repositories.managedChannels.getAll();
       if (currentChannels.find((channel) => channel.channel_name === channelLogin)) {
-        const success = await createChatMessageSubscription(channelLogin);
-        if (success) {
-          await partIrcChannel(channelLogin);
-        }
+        await joinIrcChannel(channelLogin);
       } else {
         await milesandmorebotLogger.info(
-          `[BotAuth] Channel ${channelLogin} is not actively managed. Skipping EventSub subscription.`,
+          `[BotAuth] Channel ${channelLogin} is not actively managed.`,
         );
       }
 

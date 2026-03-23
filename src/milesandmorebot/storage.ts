@@ -2,7 +2,6 @@ import { Redis } from "@upstash/redis";
 import {
   type BotStatus,
   type ChannelRecord,
-  type EventSubSubscriptionRecord,
   type Flight,
   type ManagedChannel,
   type Participant,
@@ -685,36 +684,6 @@ export const repositories = {
     },
     async getAll(): Promise<string[]> {
       return getIdsFromSet(key("blacklist"));
-    },
-  },
-
-  processedEvents: {
-    async markProcessed(eventId: string, ttlSeconds = 600): Promise<boolean> {
-      const result = await getRedis().set(key("processedEvent", eventId), "1", { nx: true, ex: ttlSeconds });
-      return result === "OK";
-    },
-  },
-
-  eventSubSubscriptions: {
-    async set(channelName: string, value: EventSubSubscriptionRecord): Promise<void> {
-      const pipeline = getRedis().pipeline();
-      pipeline.set(key("eventSubSubscription", channelName), value);
-      pipeline.set(key("eventSubSubscriptionById", value.id), channelName);
-      await pipeline.exec();
-    },
-
-    async get(channelName: string): Promise<EventSubSubscriptionRecord | null> {
-      return getObject<EventSubSubscriptionRecord>(key("eventSubSubscription", channelName));
-    },
-
-    async removeByChannel(channelName: string): Promise<void> {
-      const current = await repositories.eventSubSubscriptions.get(channelName);
-      const pipeline = getRedis().pipeline();
-      pipeline.del(key("eventSubSubscription", channelName));
-      if (current) {
-        pipeline.del(key("eventSubSubscriptionById", current.id));
-      }
-      await pipeline.exec();
     },
   },
 

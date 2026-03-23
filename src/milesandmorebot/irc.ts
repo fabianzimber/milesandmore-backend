@@ -124,7 +124,7 @@ export async function joinIrcChannel(channelName: string): Promise<boolean> {
 
   try {
     await client.join(channelName);
-    await milesandmorebotLogger.info(`[IRC] Joined #${channelName} via IRC fallback`);
+    await milesandmorebotLogger.info(`[IRC] Joined #${channelName}`);
     return true;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -144,7 +144,7 @@ export async function partIrcChannel(channelName: string): Promise<boolean> {
 
   try {
     await client.part(channelName);
-    await milesandmorebotLogger.info(`[IRC] Left #${channelName} (IRC fallback disabled)`);
+    await milesandmorebotLogger.info(`[IRC] Left #${channelName}`);
     return true;
   } catch {
     return false;

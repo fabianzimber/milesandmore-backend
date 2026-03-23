@@ -238,14 +238,6 @@ export interface SimLinkIngestPayload {
   onGround?: boolean;
 }
 
-export interface EventSubSubscriptionRecord {
-  id: string;
-  status: string;
-  broadcaster_user_id: string;
-  channel_name: string;
-  created_at: string;
-}
-
 export interface ManagedChannelWithOAuth extends ManagedChannel {
   oauth_status: "verified" | "pending";
   authorize_url?: string;
