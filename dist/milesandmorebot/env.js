@@ -24,7 +24,7 @@ exports.milesandmorebotEnv = {
     appUrl: getAppUrl(),
     authSecret: process.env.AUTH_SECRET || "",
     adminTwitchIds: optionalList("ADMIN_TWITCH_IDS"),
-    internalJobSecret: process.env.INTERNAL_JOB_SECRET || "",
+    internalJobSecret: process.env.INTERNAL_JOB_SECRET || process.env.MILESANDMORE_INTERNAL_API_SECRET || "",
     simlinkIngestSecret: process.env.SIMLINK_INGEST_SECRET || "",
     twitchAppClientId: process.env.TWITCH_APP_CLIENT_ID || "",
     twitchAppClientSecret: process.env.TWITCH_APP_CLIENT_SECRET || "",
