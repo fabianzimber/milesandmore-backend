@@ -86,29 +86,6 @@ export interface SeatInfo {
   isOwn: boolean;
 }
 
-// ===== WebSocket Types =====
-
-export type WSEventType =
-  | 'passenger_joined'
-  | 'seat_changed'
-  | 'position_update'
-  | 'boarding_status'
-  | 'flight_completed'
-  | 'bot_log';
-
-export interface WSMessage {
-  type: WSEventType;
-  data: Record<string, unknown>;
-}
-
-export interface PositionUpdate {
-  lat: number;
-  lon: number;
-  alt: number;
-  speed: number;
-  heading: number;
-}
-
 // ===== SimBrief Types =====
 
 export interface SimBriefFlightPlan {
@@ -181,7 +158,6 @@ export interface BotStatus {
   uptime: number;
   channels: number;
   commandsExecuted: number;
-  wsClients: number;
   activeFlights?: number;
   lastEventAt?: number | null;
 }
@@ -238,7 +214,3 @@ export interface SimLinkIngestPayload {
   onGround?: boolean;
 }
 
-export interface ManagedChannelWithOAuth extends ManagedChannel {
-  oauth_status: "verified" | "pending";
-  authorize_url?: string;
-}

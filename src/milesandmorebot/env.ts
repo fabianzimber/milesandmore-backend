@@ -13,8 +13,7 @@ export function assertEnv(name: string, value: string | undefined): string {
 }
 
 export function getAppUrl(): string {
-  // RAILWAY-specific resolution
-  return process.env.BACKEND_PUBLIC_URL || "http://localhost:3001";
+  return process.env.BACKEND_PUBLIC_URL || "http://localhost:8080";
 }
 
 export const milesandmorebotEnv = {
@@ -35,10 +34,3 @@ export const milesandmorebotEnv = {
   qstashCurrentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY || "",
   qstashNextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY || "",
 };
-
-export function requireAdminTwitchIds(): string[] {
-  if (milesandmorebotEnv.adminTwitchIds.length === 0) {
-    throw new Error("ADMIN_TWITCH_IDS must contain at least one Twitch user id.");
-  }
-  return milesandmorebotEnv.adminTwitchIds;
-}
