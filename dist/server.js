@@ -62,7 +62,7 @@ function createServer() {
         reply.header("access-control-allow-headers", "content-type,x-internal-job-secret,x-simlink-secret");
         reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
         if (request.method === "OPTIONS") {
-            reply.code(204).send();
+            return reply.code(204).send();
         }
     });
     app.get("/health", async () => ({ ok: true, service: "milesandmore-backend" }));
@@ -81,7 +81,24 @@ function createServer() {
     app.get("/channels", async (request, reply) => {
         if (!(await requireAdmin(reply, request)))
             return;
-        return storage_1.repositories.managedChannels.getAll();
+        const channels = await storage_1.repositories.managedChannels.getAll();
+        const authorizeUrl = new URL("https://id.twitch.tv/oauth2/authorize");
+        authorizeUrl.searchParams.set("client_id", env_1.milesandmorebotEnv.twitchAppClientId);
+        authorizeUrl.searchParams.set("redirect_uri", `${env_1.milesandmorebotEnv.appUrl}/api/twitch/callback`);
+        authorizeUrl.searchParams.set("response_type", "code");
+        authorizeUrl.searchParams.set("scope", "channel:bot");
+        authorizeUrl.searchParams.set("force_verify", "true");
+        const authorizeLink = authorizeUrl.toString();
+        const enriched = await Promise.all(channels.map(async (ch) => {
+            const sub = await storage_1.repositories.eventSubSubscriptions.get(ch.channel_name);
+            const verified = sub !== null;
+            return {
+                ...ch,
+                oauth_status: verified ? "verified" : "pending",
+                authorize_url: verified ? undefined : authorizeLink,
+            };
+        }));
+        return enriched;
     });
     app.post("/channels", async (request, reply) => {
         if (!(await requireAdmin(reply, request)))
@@ -325,7 +342,7 @@ function createServer() {
             return reply.type("text/html").send(`<html>
   <body>
     <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
-    <p style="font-family: sans-serif;">MilesAndMore hat nun offizielle Rechte als \"Chat Bot\" in deinem Kanal <strong>${channelLogin}</strong>!</p>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als \"Chat Bot\" in deinem Kanal <strong>${channelLogin}</strong>!</p>
     <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
   </body>
 </html>`);

@@ -216,8 +216,23 @@ exports.repositories = {
             }
             return {
                 ...participant,
-                ...flight,
+                flight_id: flight.id,
                 flight_status: flight.status,
+                channel_name: flight.channel_name,
+                icao_from: flight.icao_from,
+                icao_to: flight.icao_to,
+                dep_name: flight.dep_name,
+                arr_name: flight.arr_name,
+                flight_number: flight.flight_number,
+                aircraft_name: flight.aircraft_name,
+                aircraft_icao: flight.aircraft_icao,
+                seat_config: flight.seat_config,
+                aircraft_total_seats: flight.aircraft_total_seats,
+                boarding_hash: flight.boarding_hash,
+                dep_gate: flight.dep_gate,
+                arr_gate: flight.arr_gate,
+                start_time: flight.start_time,
+                end_time: flight.end_time,
             };
         },
         async getByFlightAndUser(flightId, userId) {

@@ -1,12 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getQStashReceiver = getQStashReceiver;
+exports.isQStashConfigured = isQStashConfigured;
 exports.verifyQStashRequest = verifyQStashRequest;
 exports.publishFlightJob = publishFlightJob;
 const qstash_1 = require("@upstash/qstash");
 const env_1 = require("./env");
 let qstashClient = null;
 let qstashReceiver = null;
+/** Returns true when all QStash env vars are present and jobs will actually be published. */
+function isQStashConfigured() {
+    return !!process.env.QSTASH_TOKEN;
+}
 function getQStashClient() {
     if (!qstashClient) {
         qstashClient = new qstash_1.Client({ token: process.env.QSTASH_TOKEN });
@@ -25,10 +29,22 @@ function getQStashReceiver() {
     }
     return qstashReceiver;
 }
+/**
+ * Verify an incoming job request.
+ * - When QStash signing keys are configured: verify the Upstash signature.
+ * - Always accepts requests that carry the correct x-internal-job-secret
+ *   (used by the local fallback scheduler calling the same endpoints).
+ */
 async function verifyQStashRequest(request) {
+    // Always allow internal-secret-only auth (local scheduler, manual calls)
+    if (env_1.milesandmorebotEnv.internalJobSecret &&
+        request.headers.get("x-internal-job-secret") === env_1.milesandmorebotEnv.internalJobSecret) {
+        return true;
+    }
+    // If QStash signing keys are configured, verify the Upstash signature
     const receiver = getQStashReceiver();
     if (!receiver) {
-        return request.headers.get("x-internal-job-secret") === env_1.milesandmorebotEnv.internalJobSecret;
+        return false;
     }
     const signature = request.headers.get("upstash-signature");
     if (!signature) {
@@ -40,14 +56,14 @@ async function verifyQStashRequest(request) {
             body: await request.clone().text(),
             url: request.url,
         });
-        return request.headers.get("x-internal-job-secret") === env_1.milesandmorebotEnv.internalJobSecret;
+        return true;
     }
     catch {
         return false;
     }
 }
 async function publishFlightJob(action, body, delaySeconds) {
-    if (!process.env.QSTASH_TOKEN) {
+    if (!isQStashConfigured()) {
         return { messageId: null };
     }
     return getQStashClient().publishJSON({
