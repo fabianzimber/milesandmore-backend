@@ -272,6 +272,15 @@ export async function createFlight(
 
   const scheduled = await scheduleFlightLifecycle(flight);
   await milesandmorebotLogger.info(`[Flight] created ${scheduled.flight_number || scheduled.id} for #${scheduled.channel_name}`);
+
+  // Send boarding start message to chat (regardless of how the flight was started)
+  const depName = scheduled.dep_name || scheduled.icao_from;
+  const arrName = scheduled.arr_name || scheduled.icao_to;
+  const flightNumber = scheduled.flight_number || `SK${scheduled.id}`;
+  say(scheduled.channel_name, `✈️ Das Boarding für ${flightNumber} (${depName}→${arrName}) hat begonnen! · 10 Minuten offen · &joinflight peepoHappy`).catch((err) =>
+    milesandmorebotLogger.error(`[Flight] failed to send boarding start message: ${err}`),
+  );
+
   return scheduled;
 }
 
@@ -1009,16 +1018,12 @@ const commands: CommandDefinition[] = [
         await context.send("Bitte gib sowohl den ICAO-Code des Abflughafens als auch des Zielhafens an.");
         return;
       }
-      const flight = await createFlight({
+      await createFlight({
         channel_name: context.channel.login,
         icao_from: context.args[0].toUpperCase(),
         icao_to: context.args[1].toUpperCase(),
         pilot: context.sender.login,
       });
-      const depName = flight.dep_name || flight.icao_from;
-      const arrName = flight.arr_name || flight.icao_to;
-      const flightNumber = flight.flight_number || `SK${flight.id}`;
-      await say(context.channel.login, `✈️ Das Boarding für ${flightNumber} (${depName}→${arrName}) hat begonnen! · 10 Minuten offen · &joinflight peepoHappy`);
     },
   },
   {
