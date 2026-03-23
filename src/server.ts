@@ -118,7 +118,28 @@ export function createServer() {
 
   app.get("/channels", async (request, reply) => {
     if (!(await requireAdmin(reply, request))) return;
-    return repositories.managedChannels.getAll();
+    const channels = await repositories.managedChannels.getAll();
+
+    const authorizeUrl = new URL("https://id.twitch.tv/oauth2/authorize");
+    authorizeUrl.searchParams.set("client_id", milesandmorebotEnv.twitchAppClientId);
+    authorizeUrl.searchParams.set("redirect_uri", `${milesandmorebotEnv.appUrl}/api/twitch/callback`);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("scope", "channel:bot");
+    authorizeUrl.searchParams.set("force_verify", "true");
+    const authorizeLink = authorizeUrl.toString();
+
+    const enriched = await Promise.all(
+      channels.map(async (ch) => {
+        const sub = await repositories.eventSubSubscriptions.get(ch.channel_name);
+        const verified = sub !== null;
+        return {
+          ...ch,
+          oauth_status: verified ? "verified" as const : "pending" as const,
+          authorize_url: verified ? undefined : authorizeLink,
+        };
+      }),
+    );
+    return enriched;
   });
   app.post("/channels", async (request, reply) => {
     if (!(await requireAdmin(reply, request))) return;
