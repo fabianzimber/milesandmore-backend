@@ -16,6 +16,7 @@ import {
   measurePing,
   resolveUserId,
   sendChatMessage,
+  sendWhisper,
 } from "./twitch";
 import { joinIrcChannel, partIrcChannel } from "./irc";
 
@@ -938,7 +939,15 @@ const commands: CommandDefinition[] = [
       }
       const boardingPass = generateBoardingPass(result.participant, activeFlight);
       await repositories.participants.update(result.participant.id, { boarding_pass_data: boardingPass });
-      await context.send(`✈️ ${context.sender.login} ist an Bord! Dashboard: ${getDashboardUrl(result.participant.participant_hash)}`);
+      const dashboardUrl = getDashboardUrl(result.participant.participant_hash);
+      await context.send(`✈️ ${context.sender.login} ist an Bord! Den persönlichen Boarding Pass gibt's per Whisper.`);
+      try {
+        await sendWhisper(context.sender.id, `✈️ Dein persönlicher Boarding Pass: ${dashboardUrl}`);
+      } catch (err) {
+        await milesandmorebotLogger.error(`[Whisper] Konnte Whisper an ${context.sender.login} nicht senden: ${err instanceof Error ? err.message : err}`);
+        // Fallback: send link in chat if whisper fails
+        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – hier dein Link: ${dashboardUrl}`);
+      }
     },
   },
   {
