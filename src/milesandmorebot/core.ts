@@ -268,7 +268,15 @@ export async function createFlight(
     created_at: startTime,
   });
 
-  const scheduled = await scheduleFlightLifecycle(flight);
+  let scheduled: Flight;
+  try {
+    scheduled = await scheduleFlightLifecycle(flight);
+  } catch (scheduleErr) {
+    // QStash scheduling may fail (e.g. deduplication conflict) – the local
+    // fallback scheduler will pick this flight up, so we continue gracefully.
+    await milesandmorebotLogger.error(`[Flight] QStash scheduling failed for flight ${flight.id}, local scheduler will handle it: ${scheduleErr}`);
+    scheduled = flight;
+  }
   await milesandmorebotLogger.info(`[Flight] created ${scheduled.flight_number || scheduled.id} for #${scheduled.channel_name}`);
 
   // Send boarding start message to chat (regardless of how the flight was started)
@@ -335,7 +343,12 @@ export async function resumeBoarding(flightId: number, extraMinutes = 5): Promis
   if (!updated) {
     return null;
   }
-  return scheduleFlightLifecycle(updated);
+  try {
+    return await scheduleFlightLifecycle(updated);
+  } catch (scheduleErr) {
+    await milesandmorebotLogger.error(`[Flight] QStash scheduling failed for resumed flight ${flightId}, local scheduler will handle it: ${scheduleErr}`);
+    return updated;
+  }
 }
 
 export async function resumeFlight(flightId: number): Promise<Flight | null> {
