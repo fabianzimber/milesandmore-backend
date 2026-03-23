@@ -1,0 +1,3 @@
+root_owner: backend-team@example.com
+config_owner: backend-admin@example.com
+description: Ownership mapping for root configs

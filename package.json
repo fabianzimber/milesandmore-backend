@@ -1,0 +1,25 @@
+{
+  "name": "milesandmore-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "tmi.js": "^1.8.5",
+    "@upstash/redis": "^1.35.6",
+    "@upstash/qstash": "^2.8.1",
+    "nanoid": "^3.3.11",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/tmi.js": "^1.8.6",
+    "tsx": "^4.20.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5"
+  }
+}
