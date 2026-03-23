@@ -113,7 +113,7 @@ async function joinIrcChannel(channelName) {
     }
     try {
         await client.join(channelName);
-        await logger_1.milesandmorebotLogger.info(`[IRC] Joined #${channelName} via IRC fallback`);
+        await logger_1.milesandmorebotLogger.info(`[IRC] Joined #${channelName}`);
         return true;
     }
     catch (error) {
@@ -132,7 +132,7 @@ async function partIrcChannel(channelName) {
     }
     try {
         await client.part(channelName);
-        await logger_1.milesandmorebotLogger.info(`[IRC] Left #${channelName} (IRC fallback disabled)`);
+        await logger_1.milesandmorebotLogger.info(`[IRC] Left #${channelName}`);
         return true;
     }
     catch {

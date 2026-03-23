@@ -27,6 +27,7 @@ exports.handleSimLinkIngest = handleSimLinkIngest;
 exports.getCommandsMetadata = getCommandsMetadata;
 exports.handleChatMessage = handleChatMessage;
 const nanoid_1 = require("nanoid");
+const airports_1 = require("../lib/airports");
 const env_1 = require("./env");
 const logger_1 = require("./logger");
 const scheduler_1 = require("./scheduler");
@@ -71,6 +72,12 @@ function splitMessage(message, maxLength = 450) {
 }
 function formatSafeMention(username) {
     return `@\u200B${username.replace(/^@+/, "")}`;
+}
+function countryCodeToFlag(code) {
+    if (!code || code.length !== 2)
+        return "";
+    const upper = code.toUpperCase();
+    return upper.split("").map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("");
 }
 async function say(channelLogin, message) {
     for (const part of splitMessage(message)) {
@@ -194,6 +201,21 @@ async function createFlight(flightData) {
     if (existing) {
         throw new Error("There is already an active flight in this channel");
     }
+    // Clean up old completed/cancelled/aborted flights in this channel.
+    // Participant records are deleted so stale data (e.g. boarding status) does
+    // not bleed into the new flight. Awarded miles are stored separately in
+    // userMiles and are not affected.
+    const oldFlights = await storage_1.repositories.flights.getAllByChannelAndStatus(flightData.channel_name, ["completed", "cancelled", "aborted"]);
+    for (const old of oldFlights) {
+        await storage_1.repositories.participants.deleteByFlight(old.id);
+        await storage_1.repositories.flights.delete(old.id);
+    }
+    const depCoords = flightData.dep_lat != null
+        ? { lat: flightData.dep_lat, lon: flightData.dep_lon }
+        : (0, airports_1.getAirportCoords)(flightData.icao_from);
+    const arrCoords = flightData.arr_lat != null
+        ? { lat: flightData.arr_lat, lon: flightData.arr_lon }
+        : (0, airports_1.getAirportCoords)(flightData.icao_to);
     const startTime = Date.now();
     const closeAt = startTime + 10 * 60 * 1000;
     const warningConfig = computeWarningConfig(closeAt, startTime);
@@ -217,6 +239,10 @@ async function createFlight(flightData) {
         arr_name: flightData.arr_name,
         dep_gate: flightData.dep_gate,
         arr_gate: flightData.arr_gate,
+        dep_lat: depCoords?.lat,
+        dep_lon: depCoords?.lon,
+        arr_lat: arrCoords?.lat,
+        arr_lon: arrCoords?.lon,
         aircraft_total_seats: flightData.aircraft_total_seats || 180,
         seat_config: flightData.seat_config || "3-3",
         boarding_hash: (0, nanoid_1.nanoid)(12),
@@ -228,8 +254,22 @@ async function createFlight(flightData) {
         lifecycle_version: 1,
         created_at: startTime,
     });
-    const scheduled = await scheduleFlightLifecycle(flight);
+    let scheduled;
+    try {
+        scheduled = await scheduleFlightLifecycle(flight);
+    }
+    catch (scheduleErr) {
+        // QStash scheduling may fail (e.g. deduplication conflict) – the local
+        // fallback scheduler will pick this flight up, so we continue gracefully.
+        await logger_1.milesandmorebotLogger.error(`[Flight] QStash scheduling failed for flight ${flight.id}, local scheduler will handle it: ${scheduleErr}`);
+        scheduled = flight;
+    }
     await logger_1.milesandmorebotLogger.info(`[Flight] created ${scheduled.flight_number || scheduled.id} for #${scheduled.channel_name}`);
+    // Send boarding start message to chat (regardless of how the flight was started)
+    const depName = scheduled.dep_name || scheduled.icao_from;
+    const arrName = scheduled.arr_name || scheduled.icao_to;
+    const flightNumber = scheduled.flight_number || `SK${scheduled.id}`;
+    say(scheduled.channel_name, `✈️ Das Boarding für ${flightNumber} (${depName}→${arrName}) hat begonnen! | 10 Minuten offen | &joinflight peepoHappy`).catch((err) => logger_1.milesandmorebotLogger.error(`[Flight] failed to send boarding start message: ${err}`));
     return scheduled;
 }
 async function getFlightById(id) {
@@ -251,8 +291,8 @@ async function updateFlightStatus(flightId, status) {
             ? {
                 warning_job_id: null,
                 close_job_id: null,
-                warning_at: undefined,
-                close_at: undefined,
+                warning_at: 0,
+                close_at: 0,
             }
             : {}),
     });
@@ -281,7 +321,13 @@ async function resumeBoarding(flightId, extraMinutes = 5) {
     if (!updated) {
         return null;
     }
-    return scheduleFlightLifecycle(updated);
+    try {
+        return await scheduleFlightLifecycle(updated);
+    }
+    catch (scheduleErr) {
+        await logger_1.milesandmorebotLogger.error(`[Flight] QStash scheduling failed for resumed flight ${flightId}, local scheduler will handle it: ${scheduleErr}`);
+        return updated;
+    }
 }
 async function resumeFlight(flightId) {
     await storage_1.repositories.simlink.setFlightId(flightId);
@@ -451,10 +497,10 @@ async function sendBoardingWarningJob(flightId, channelName, warningMinutes, lif
     const depName = flight.dep_name || flight.icao_from;
     const arrName = flight.arr_name || flight.icao_to;
     if ((warningMinutes || 0) >= 5) {
-        await say(channelName, `⏰ Noch 5 Min · ${depName}→${arrName} · &joinflight DinkDonk`);
+        await say(channelName, `⏰ Noch 5 Min | ${depName}→${arrName} | &joinflight DinkDonk`);
         return;
     }
-    await say(channelName, `⏰ Letzter Aufruf monkaS · ${depName}→${arrName} · &joinflight DinkDonk`);
+    await say(channelName, `⏰ Letzter Aufruf monkaS | ${depName}→${arrName} | &joinflight DinkDonk`);
 }
 async function getParticipantByHash(hash) {
     return storage_1.repositories.participants.getByHashWithFlight(hash);
@@ -496,11 +542,7 @@ async function addManagedChannel(channelName) {
         channelCreated = true;
         await setPrefix(user.id, "&");
         await storage_1.repositories.cooldowns.clearCooldown(`channel:${user.id}:muted`);
-        const eventSubSuccess = await (0, twitch_1.createChatMessageSubscription)(lower);
-        if (!eventSubSuccess) {
-            // Fallback to IRC
-            await (0, irc_1.joinIrcChannel)(lower);
-        }
+        await (0, irc_1.joinIrcChannel)(lower);
         await say(lower, "Miles & More ist jetzt an Bord. peepoHey");
         return channel;
     }
@@ -516,11 +558,10 @@ async function removeManagedChannel(channelName) {
     const lower = channelName.toLowerCase();
     await storage_1.repositories.managedChannels.remove(lower);
     await storage_1.repositories.channels.remove(lower);
-    await (0, twitch_1.deleteChatMessageSubscription)(lower);
     await (0, irc_1.partIrcChannel)(lower);
 }
 async function fetchSimBriefFlightPlan(pilotId) {
-    const response = await fetch(`https://www.simbrief.com/api/xml.fetcher.php?username=${encodeURIComponent(pilotId)}&json=1`, { cache: "no-store" });
+    const response = await fetch(`https://www.simbrief.com/api/xml.fetcher.php?username=${encodeURIComponent(pilotId)}&json=1`);
     const data = (await response.json());
     if (!response.ok || !data.origin || !data.destination) {
         throw new Error("Invalid SimBrief response - no flight plan found");
@@ -543,6 +584,8 @@ async function fetchSimBriefFlightPlan(pilotId) {
             name: String(data.origin?.name || ""),
             gate: String(data.origin?.plan_rwy || ""),
             country: String(data.origin?.country || ""),
+            lat: parseFloat(String(data.origin?.pos_lat || "")) || undefined,
+            lon: parseFloat(String(data.origin?.pos_long || "")) || undefined,
         },
         destination: {
             icao: String(data.destination?.icao_code || ""),
@@ -550,6 +593,8 @@ async function fetchSimBriefFlightPlan(pilotId) {
             gate: String(data.destination?.plan_rwy || ""),
             country: String(data.destination?.country || ""),
             country_name: String(data.destination?.country_name || data.destination?.country || ""),
+            lat: parseFloat(String(data.destination?.pos_lat || "")) || undefined,
+            lon: parseFloat(String(data.destination?.pos_long || "")) || undefined,
         },
         route: String(data.general?.route || ""),
         cruise_altitude: Number.parseInt(String(data.general?.initial_altitude || "35000"), 10),
@@ -642,9 +687,9 @@ const commands = [
                 await context.send("🌍 Du hast leider noch keine Länder freigeschaltet. YEP");
                 return;
             }
-            const names = countries.map((country) => country.country_name).join(", ");
-            const display = names.length > 400 ? `${names.slice(0, 400)}...` : names;
-            await context.send(`🌍 Du hast bereits ${countries.length} Länder bereist: ${display} Clap`);
+            const display = countries.map((country) => `${countryCodeToFlag(country.country_code)} ${country.country_name}`).join(" | ");
+            const trimmed = display.length > 400 ? `${display.slice(0, 400)}...` : display;
+            await context.send(`🌍 Du hast bereits ${countries.length} Länder bereist: ${trimmed} Clap`);
         },
     },
     {
@@ -667,9 +712,9 @@ const commands = [
             const miles = rewards.length > 0 ? rewards[0].miles_earned : 0;
             const parts = [`🏁 ${depName}→${arrName} ist gelandet Clap`];
             if (rewards.length > 0)
-                parts.push(`· ${rewards.length} Pax · +${miles} Meilen peepoHappy`);
+                parts.push(`| ${rewards.length} Pax | +${miles} Meilen peepoHappy`);
             if (flight.arr_country_name)
-                parts.push(`· 🌍 ${flight.arr_country_name}`);
+                parts.push(`| ${countryCodeToFlag(flight.arr_country || "")} ${flight.arr_country_name}`);
             await say(context.channel.login, parts.join(" "));
         },
     },
@@ -692,8 +737,8 @@ const commands = [
             const parts = [
                 `✈️ ${flight.flight_number || flight.id} ${dep}→${arr}`,
                 flight.aircraft_name ? `(${flight.aircraft_name})` : "",
-                `· ${flight.status === "boarding" ? "Boarding" : "In Flight"}`,
-                `· ${pax.length} Pax`,
+                `| ${flight.status === "boarding" ? "Boarding" : "In Flight"}`,
+                `| ${pax.length} Pax`,
             ].filter(Boolean);
             await context.send(parts.join(" "));
         },
@@ -734,7 +779,7 @@ const commands = [
             }
             const list = all
                 .map((flight) => `${flight.flight_number || flight.id}: ${flight.dep_name || flight.icao_from}→${flight.arr_name || flight.icao_to} (${flight.status})`)
-                .join(" · ");
+                .join(" | ");
             await context.send(`✈️ ${all.length} Flüge: ${list}`);
         },
     },
@@ -750,19 +795,13 @@ const commands = [
             if (context.sender.perms >= permissions.admin && context.args[0]) {
                 channelName = context.args[0].toLowerCase();
             }
-            const userId = await (0, twitch_1.resolveUserId)(channelName);
-            if (!userId) {
-                await context.send("Dieser Twitch User existiert leider nicht. Susge");
+            try {
+                await addManagedChannel(channelName);
+            }
+            catch (err) {
+                await context.send(err instanceof Error ? err.message : "Konnte den Kanal nicht hinzufügen.");
                 return;
             }
-            await storage_1.repositories.channels.add(channelName, userId).catch(async (error) => {
-                if (error.code !== "ER_DUP_ENTRY") {
-                    throw error;
-                }
-            });
-            await storage_1.repositories.ncMessages.setSent(userId);
-            await addManagedChannel(channelName);
-            await context.send(`Ich bin jetzt in @${channelName} aktiv. peepoHappy`);
         },
     },
     {
@@ -785,7 +824,16 @@ const commands = [
             }
             const boardingPass = generateBoardingPass(result.participant, activeFlight);
             await storage_1.repositories.participants.update(result.participant.id, { boarding_pass_data: boardingPass });
-            await context.send(`✈️ ${context.sender.login} ist an Bord! Dashboard: ${getDashboardUrl(result.participant.participant_hash)}`);
+            const dashboardUrl = getDashboardUrl(result.participant.participant_hash);
+            await context.send(`✈️ ${context.sender.login} ist an Bord! Den persönlichen Boarding Pass gibt's per Whisper.`);
+            try {
+                await (0, twitch_1.sendWhisper)(context.sender.id, `✈️ Dein persönlicher Boarding Pass: ${dashboardUrl}`);
+            }
+            catch (err) {
+                await logger_1.milesandmorebotLogger.error(`[Whisper] Konnte Whisper an ${context.sender.login} nicht senden: ${err instanceof Error ? err.message : err}`);
+                // Fallback: send link in chat if whisper fails
+                await context.send(`@${context.sender.login} Whisper fehlgeschlagen – hier dein Link: ${dashboardUrl}`);
+            }
         },
     },
     {
@@ -802,7 +850,7 @@ const commands = [
                 await context.send("Du hast bisher noch keine absolvierten Flüge. ✈️ KEKW");
                 return;
             }
-            await context.send(`✈️ ${stats.user_name}: ${stats.total_miles.toLocaleString()} Meilen · ${stats.total_flights} Flüge · ${countries} Länder`);
+            await context.send(`✈️ ${stats.user_name}: ${stats.total_miles.toLocaleString()} Meilen | ${stats.total_flights} Flüge | ${countries} Länder`);
         },
     },
     {
@@ -854,7 +902,7 @@ const commands = [
             const dep = participant.dep_name || participant.icao_from || "";
             const arr = participant.arr_name || participant.icao_to || "";
             const seat = participant.seat || "TBD";
-            await context.send(`🪑 Sitz ${seat} · ${participant.flight_number || "Flug"} ${dep}→${arr} · Dashboard: ${getDashboardUrl(participant.participant_hash)}`);
+            await context.send(`🪑 Sitz ${seat} | ${participant.flight_number || "Flug"} ${dep}→${arr} | Dashboard: ${getDashboardUrl(participant.participant_hash)}`);
         },
     },
     {
@@ -874,10 +922,10 @@ const commands = [
             const pax = await storage_1.repositories.participants.getByFlight(flight.id);
             if (flight.status === "boarding") {
                 const remainingMinutes = Math.max(0, Math.ceil(((flight.end_time || Date.now()) - Date.now()) / 60_000));
-                await context.send(`Status: Boarding ${flight.icao_from}→${flight.icao_to} · noch ${remainingMinutes} Min · ${pax.length} Pax.`);
+                await context.send(`Status: Boarding ${flight.icao_from}→${flight.icao_to} | noch ${remainingMinutes} Min | ${pax.length} Pax.`);
                 return;
             }
-            await context.send(`Status: In der Luft ${flight.icao_from}→${flight.icao_to} · ${pax.length} Pax.`);
+            await context.send(`Status: In der Luft ${flight.icao_from}→${flight.icao_to} | ${pax.length} Pax.`);
         },
     },
     {
@@ -892,16 +940,12 @@ const commands = [
                 await context.send("Bitte gib sowohl den ICAO-Code des Abflughafens als auch des Zielhafens an.");
                 return;
             }
-            const flight = await createFlight({
+            await createFlight({
                 channel_name: context.channel.login,
                 icao_from: context.args[0].toUpperCase(),
                 icao_to: context.args[1].toUpperCase(),
                 pilot: context.sender.login,
             });
-            const depName = flight.dep_name || flight.icao_from;
-            const arrName = flight.arr_name || flight.icao_to;
-            const flightNumber = flight.flight_number || `SK${flight.id}`;
-            await say(context.channel.login, `✈️ Das Boarding für ${flightNumber} (${depName}→${arrName}) hat begonnen! · 10 Minuten offen · &joinflight peepoHappy`);
         },
     },
     {
@@ -917,7 +961,7 @@ const commands = [
                 await context.send("Es sind noch keine Daten verfügbar. Sadge");
                 return;
             }
-            const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.countries_count})`).join(" · ");
+            const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.countries_count})`).join(" | ");
             await context.send(`🌍 Top Länder: ${list}`);
         },
     },
@@ -934,7 +978,7 @@ const commands = [
                 await context.send("Es sind noch keine Daten verfügbar. Sadge");
                 return;
             }
-            const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.total_miles.toLocaleString()})`).join(" · ");
+            const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.total_miles.toLocaleString()})`).join(" | ");
             await context.send(`🏆 Top Meilen: ${list}`);
         },
     },
@@ -1013,9 +1057,8 @@ async function handleChatMessage(ircMessage) {
         return false;
     }
     const userPermission = await getUserPermission(ircMessage.senderUserID, ircMessage.badges);
-    const send = async (message, reply = true) => {
-        const payload = reply && ircMessage.messageID ? `@${ircMessage.displayName}, ${message}` : message;
-        await say(ircMessage.channelName, payload);
+    const send = async (message, _reply = true) => {
+        await say(ircMessage.channelName, message);
     };
     if (command.name !== "unmute" && (await storage_1.repositories.cooldowns.isOnCooldown(`channel:${ircMessage.channelID}:muted`))) {
         if (!(await storage_1.repositories.cooldowns.isOnCooldown(`notice:muted:${ircMessage.channelID}:${ircMessage.senderUserID}`))) {

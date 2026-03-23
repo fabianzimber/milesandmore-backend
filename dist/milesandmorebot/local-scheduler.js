@@ -46,14 +46,15 @@ const STUCK_FLIGHT_TIMEOUT_MS = 12 * 60 * 60 * 1000; // 12h max flight
 // the local scheduler steps in. This gives QStash time to deliver the job
 // and avoids duplicate actions.
 const QSTASH_GRACE_PERIOD_MS = 60_000; // 1 minute grace
-let schedulerTimer = null;
+// Use globalThis to persist across tsx watch reloads and prevent duplicate timers
+const globalForScheduler = globalThis;
 // Track which warnings we already sent so we don't spam
-const sentWarnings = new Set();
+const sentWarnings = globalForScheduler.localSchedulerWarnings ??= new Set();
 function startLocalScheduler() {
-    if (schedulerTimer) {
+    if (globalForScheduler.localSchedulerTimer) {
         return;
     }
-    schedulerTimer = setInterval(() => {
+    globalForScheduler.localSchedulerTimer = setInterval(() => {
         runSchedulerTick().catch((error) => {
             logger_1.milesandmorebotLogger.error(`[LocalScheduler] tick error: ${error instanceof Error ? error.message : "unknown"}`).catch(() => { });
         });
@@ -62,9 +63,9 @@ function startLocalScheduler() {
     logger_1.milesandmorebotLogger.info(`[LocalScheduler] started — mode: ${mode}, interval: 15s`).catch(() => { });
 }
 function stopLocalScheduler() {
-    if (schedulerTimer) {
-        clearInterval(schedulerTimer);
-        schedulerTimer = null;
+    if (globalForScheduler.localSchedulerTimer) {
+        clearInterval(globalForScheduler.localSchedulerTimer);
+        globalForScheduler.localSchedulerTimer = undefined;
     }
 }
 /**

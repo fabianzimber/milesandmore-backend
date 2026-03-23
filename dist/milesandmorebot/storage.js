@@ -69,7 +69,6 @@ exports.repositories = {
                 uptime: Math.max(0, Date.now() - Number(bootedAt)),
                 channels: channels.length,
                 commandsExecuted: Number(commandsExecuted || 0),
-                wsClients: 0,
                 activeFlights: boarding.length + inFlight.length,
                 lastEventAt: lastEventAt ? Number(lastEventAt) : null,
             };
@@ -108,6 +107,11 @@ exports.repositories = {
                 }
             }
             return null;
+        },
+        async getAllByChannelAndStatus(channel, statuses) {
+            const ids = await getIdsFromSortedSet(key("flights", "channel", channel));
+            const flights = await loadMany(ids, (id) => exports.repositories.flights.getById(Number(id)));
+            return flights.filter((flight) => statuses.includes(flight.status));
         },
         async getByStatus(status) {
             const ids = await getIdsFromSortedSet(key("flights", "status", status));
@@ -231,6 +235,10 @@ exports.repositories = {
                 boarding_hash: flight.boarding_hash,
                 dep_gate: flight.dep_gate,
                 arr_gate: flight.arr_gate,
+                dep_lat: flight.dep_lat,
+                dep_lon: flight.dep_lon,
+                arr_lat: flight.arr_lat,
+                arr_lon: flight.arr_lon,
                 start_time: flight.start_time,
                 end_time: flight.end_time,
             };
@@ -279,6 +287,9 @@ exports.repositories = {
         },
         async deleteByFlight(flightId) {
             const participants = await exports.repositories.participants.getByFlight(flightId);
+            if (participants.length === 0) {
+                return;
+            }
             const pipeline = getRedis().pipeline();
             for (const participant of participants) {
                 pipeline.del(key("participant", participant.id));
@@ -396,35 +407,6 @@ exports.repositories = {
             const names = await getIdsFromSet(key("channels"));
             return loadMany(names, (name) => getObject(key("channel", name)));
         },
-        async updateBanned(userId, banned) {
-            const name = await getRedis().get(key("channelByUser", userId));
-            if (!name) {
-                return;
-            }
-            const record = await getObject(key("channel", name));
-            if (!record) {
-                return;
-            }
-            await setObject(key("channel", name), { ...record, banned: banned ? 1 : 0 });
-        },
-        async updateName(userId, newName) {
-            const previousName = await getRedis().get(key("channelByUser", userId));
-            if (!previousName) {
-                return;
-            }
-            const record = await getObject(key("channel", previousName));
-            if (!record) {
-                return;
-            }
-            const updated = { ...record, name: newName };
-            const pipeline = getRedis().pipeline();
-            pipeline.del(key("channel", previousName));
-            pipeline.srem(key("channels"), previousName);
-            pipeline.set(key("channel", newName), updated);
-            pipeline.set(key("channelByUser", userId), newName);
-            pipeline.sadd(key("channels"), newName);
-            await pipeline.exec();
-        },
         async remove(name) {
             const record = await getObject(key("channel", name));
             const pipeline = getRedis().pipeline();
@@ -434,12 +416,6 @@ exports.repositories = {
                 pipeline.del(key("channelByUser", record.user_id));
             }
             await pipeline.exec();
-        },
-        async removeByUserId(userId) {
-            const name = await getRedis().get(key("channelByUser", userId));
-            if (name) {
-                await exports.repositories.channels.remove(name);
-            }
         },
     },
     managedChannels: {
@@ -504,17 +480,6 @@ exports.repositories = {
             await getRedis().set(key("runtimeConfig", "botRestartedAt"), timestamp);
         },
     },
-    botLogs: {
-        async getRecent(limit = 100) {
-            const rows = (await getRedis().lrange(key("botLogs"), 0, Math.max(0, limit - 1))) || [];
-            return [...rows].reverse();
-        },
-    },
-    ncMessages: {
-        async setSent(channelId) {
-            await getRedis().set(key("cache", "nc", channelId), "1", { ex: 86400 });
-        },
-    },
     cache: {
         async get(cacheKey) {
             const value = await getRedis().get(key("cache", cacheKey));
@@ -575,32 +540,6 @@ exports.repositories = {
         },
         async getAll() {
             return getIdsFromSet(key("blacklist"));
-        },
-    },
-    processedEvents: {
-        async markProcessed(eventId, ttlSeconds = 600) {
-            const result = await getRedis().set(key("processedEvent", eventId), "1", { nx: true, ex: ttlSeconds });
-            return result === "OK";
-        },
-    },
-    eventSubSubscriptions: {
-        async set(channelName, value) {
-            const pipeline = getRedis().pipeline();
-            pipeline.set(key("eventSubSubscription", channelName), value);
-            pipeline.set(key("eventSubSubscriptionById", value.id), channelName);
-            await pipeline.exec();
-        },
-        async get(channelName) {
-            return getObject(key("eventSubSubscription", channelName));
-        },
-        async removeByChannel(channelName) {
-            const current = await exports.repositories.eventSubSubscriptions.get(channelName);
-            const pipeline = getRedis().pipeline();
-            pipeline.del(key("eventSubSubscription", channelName));
-            if (current) {
-                pipeline.del(key("eventSubSubscriptionById", current.id));
-            }
-            await pipeline.exec();
         },
     },
     simlink: {

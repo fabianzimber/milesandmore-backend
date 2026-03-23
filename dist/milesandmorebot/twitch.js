@@ -32,24 +32,16 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.assertValidBotCredentials = assertValidBotCredentials;
 exports.getUsersByLogin = getUsersByLogin;
 exports.getUserByLogin = getUserByLogin;
 exports.sendChatMessage = sendChatMessage;
+exports.sendWhisper = sendWhisper;
 exports.measurePing = measurePing;
-exports.normalizeEventSubChatMessage = normalizeEventSubChatMessage;
-exports.verifyEventSubSignature = verifyEventSubSignature;
-exports.isFreshEventSubTimestamp = isFreshEventSubTimestamp;
-exports.createChatMessageSubscription = createChatMessageSubscription;
-exports.deleteChatMessageSubscription = deleteChatMessageSubscription;
 exports.resolveUserId = resolveUserId;
 exports.getBotRuntimeSettings = getBotRuntimeSettings;
 exports.restartBotRuntime = restartBotRuntime;
-const node_crypto_1 = __importDefault(require("node:crypto"));
 const env_1 = require("./env");
 const logger_1 = require("./logger");
 const storage_1 = require("./storage");
@@ -63,10 +55,33 @@ class TwitchRequestError extends Error {
 }
 const TWITCH_API_BASE = "https://api.twitch.tv/helix";
 const TWITCH_OAUTH_BASE = "https://id.twitch.tv/oauth2";
-const REQUIRED_BOT_SCOPES = ["user:bot", "user:read:chat", "user:write:chat"];
-let appAccessTokenCache = null;
-function clearAppAccessTokenCache() {
-    appAccessTokenCache = null;
+const REQUIRED_BOT_SCOPES = ["user:bot", "user:read:chat", "user:write:chat", "user:manage:whispers"];
+let botCredentialCache = null;
+const BOT_CREDENTIAL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const userCache = new Map();
+const USER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const USER_CACHE_MAX_SIZE = 500;
+function pruneUserCache() {
+    if (userCache.size <= USER_CACHE_MAX_SIZE)
+        return;
+    const now = Date.now();
+    for (const [key, entry] of userCache) {
+        if (entry.expiresAt <= now)
+            userCache.delete(key);
+    }
+    if (userCache.size > USER_CACHE_MAX_SIZE) {
+        const excess = userCache.size - USER_CACHE_MAX_SIZE;
+        let removed = 0;
+        for (const key of userCache.keys()) {
+            if (removed >= excess)
+                break;
+            userCache.delete(key);
+            removed++;
+        }
+    }
+}
+function clearBotCredentialCache() {
+    botCredentialCache = null;
 }
 function normalizeAccessToken(token) {
     return token.trim().replace(/^oauth:/i, "");
@@ -184,48 +199,10 @@ async function getAuthHeaders(extra) {
         ...extra,
     };
 }
-async function getAppAccessToken() {
-    const now = Date.now();
-    if (appAccessTokenCache && appAccessTokenCache.expiresAt > now + 60_000) {
-        return appAccessTokenCache.token;
-    }
-    const { clientId, clientSecret } = getAppCredentialSnapshot();
-    const response = await fetch(`${TWITCH_OAUTH_BASE}/token`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-            client_id: (0, env_1.assertEnv)("TWITCH_APP_CLIENT_ID", clientId),
-            client_secret: (0, env_1.assertEnv)("TWITCH_APP_CLIENT_SECRET", clientSecret),
-            grant_type: "client_credentials",
-        }),
-        cache: "no-store",
-    });
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Twitch App-Token konnte nicht erstellt werden: ${response.status} ${text}`);
-    }
-    const payload = (await response.json());
-    appAccessTokenCache = {
-        token: payload.access_token,
-        expiresAt: now + payload.expires_in * 1000,
-    };
-    return payload.access_token;
-}
-async function getAppAuthHeaders(extra) {
-    const { clientId } = getAppCredentialSnapshot();
-    return {
-        "Client-Id": (0, env_1.assertEnv)("TWITCH_APP_CLIENT_ID", clientId),
-        Authorization: `Bearer ${await getAppAccessToken()}`,
-        ...extra,
-    };
-}
-async function twitchFetch(path, init, authMode = "bot") {
+async function twitchFetch(path, init) {
     const response = await fetch(`${TWITCH_API_BASE}${path}`, {
         ...init,
-        headers: authMode === "app" ? await getAppAuthHeaders(init?.headers) : await getAuthHeaders(init?.headers),
-        cache: "no-store",
+        headers: await getAuthHeaders(init?.headers),
     });
     if (!response.ok) {
         const text = await response.text();
@@ -241,7 +218,6 @@ async function validateBotToken(clientId, accessToken) {
         headers: {
             Authorization: `OAuth ${accessToken}`,
         },
-        cache: "no-store",
     });
     if (!response.ok) {
         const text = await response.text();
@@ -258,12 +234,18 @@ async function validateBotToken(clientId, accessToken) {
     return payload;
 }
 async function ensureValidBotCredentials() {
+    const now = Date.now();
+    if (botCredentialCache && botCredentialCache.expiresAt > now) {
+        return { credentials: botCredentialCache.credentials, validated: botCredentialCache.validated };
+    }
     const credentials = await getBotCredentialInput();
     const validated = await validateBotToken(credentials.botClientId, credentials.accessToken);
     if (credentials.source === "redis") {
         const persisted = await persistBotCredentials(credentials, validated);
+        botCredentialCache = { credentials: persisted, validated, expiresAt: now + BOT_CREDENTIAL_CACHE_TTL_MS };
         return { credentials: persisted, validated };
     }
+    botCredentialCache = { credentials, validated, expiresAt: now + BOT_CREDENTIAL_CACHE_TTL_MS };
     return { credentials, validated };
 }
 async function inspectBotCredentials() {
@@ -340,50 +322,37 @@ async function getBotUser() {
         display_name: inspection.botDisplayName || inspection.botUsername || "",
     };
 }
-async function syncManagedChannelSubscriptions() {
+async function syncManagedIrcChannels() {
     const channels = await storage_1.repositories.managedChannels.getAll();
-    const errors = [];
-    const { joinIrcChannel, partIrcChannel } = await Promise.resolve().then(() => __importStar(require("./irc")));
+    const { joinIrcChannel } = await Promise.resolve().then(() => __importStar(require("./irc")));
     for (const channel of channels) {
-        try {
-            await deleteChatMessageSubscription(channel.channel_name);
-        }
-        catch (error) {
-            await storage_1.repositories.eventSubSubscriptions.removeByChannel(channel.channel_name);
-            await logger_1.milesandmorebotLogger.warn(`[Runtime] subscription cleanup failed for #${channel.channel_name}: ${error instanceof Error ? error.message : "unknown error"}`);
-        }
-        try {
-            const eventSubSuccess = await createChatMessageSubscription(channel.channel_name);
-            if (eventSubSuccess) {
-                await partIrcChannel(channel.channel_name);
-            }
-            else {
-                const joined = await joinIrcChannel(channel.channel_name);
-                if (!joined) {
-                    errors.push({ channelName: channel.channel_name, reason: "IRC fallback join failed" });
-                    await logger_1.milesandmorebotLogger.error(`[Runtime] IRC fallback join failed for #${channel.channel_name}`);
-                }
-            }
-        }
-        catch (error) {
-            const reason = error instanceof Error ? error.message : "unknown error";
-            errors.push({ channelName: channel.channel_name, reason });
-            await logger_1.milesandmorebotLogger.error(`[Runtime] subscription re-sync failed for #${channel.channel_name}: ${reason}`);
+        const joined = await joinIrcChannel(channel.channel_name);
+        if (!joined) {
+            await logger_1.milesandmorebotLogger.error(`[Runtime] IRC join failed for #${channel.channel_name}`);
         }
     }
-    return errors;
 }
 async function getUsersByLogin(logins) {
     if (logins.length === 0) {
         return [];
     }
     const query = logins.map((login) => `login=${encodeURIComponent(login)}`).join("&");
-    const response = await twitchFetch(`/users?${query}`, undefined, "app");
+    const response = await twitchFetch(`/users?${query}`);
     return response.data || [];
 }
 async function getUserByLogin(login) {
+    const now = Date.now();
+    const cached = userCache.get(login.toLowerCase());
+    if (cached && cached.expiresAt > now) {
+        return cached.user;
+    }
     const users = await getUsersByLogin([login]);
-    return users[0] || null;
+    const user = users[0] || null;
+    if (user) {
+        pruneUserCache();
+        userCache.set(login.toLowerCase(), { user, expiresAt: now + USER_CACHE_TTL_MS });
+    }
+    return user;
 }
 async function sendChatMessage(channelName, message) {
     const [broadcaster, botUser] = await Promise.all([getUserByLogin(channelName), getBotUser()]);
@@ -395,143 +364,28 @@ async function sendChatMessage(channelName, message) {
         sender_id: botUser.id,
         message,
     };
-    try {
-        // Attempt with App Access Token to get the Chat Bot Badge (requires streamer to have authorized the bot)
-        await twitchFetch("/chat/messages", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify(payload),
-        }, "app");
-    }
-    catch (error) {
-        if (error instanceof TwitchRequestError && (error.status === 403 || error.status === 401)) {
-            // Streamer hasn't authorized channel:bot. Fall back to the bot's own User Access Token.
-            await twitchFetch("/chat/messages", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(payload),
-            }, "bot");
-        }
-        else {
-            throw error;
-        }
-    }
+    await twitchFetch("/chat/messages", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+    });
     await logger_1.milesandmorebotLogger.chat(`[OUT] #${channelName}: ${message}`);
+}
+async function sendWhisper(toUserId, message) {
+    const botUser = await getBotUser();
+    const params = new URLSearchParams({ from_user_id: botUser.id, to_user_id: toUserId });
+    await twitchFetch(`/whispers?${params}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+    });
 }
 async function measurePing() {
     const start = performance.now();
-    await twitchFetch("/users?login=twitchdev", undefined, "app");
+    await twitchFetch("/users?login=twitchdev");
     return Math.round(performance.now() - start);
-}
-function normalizeEventSubChatMessage(payload) {
-    const event = payload.event;
-    if (!event) {
-        return null;
-    }
-    return {
-        messageID: String(event.message_id || ""),
-        channelName: String(event.broadcaster_user_login || ""),
-        channelID: String(event.broadcaster_user_id || ""),
-        senderUsername: String(event.chatter_user_login || ""),
-        senderUserID: String(event.chatter_user_id || ""),
-        displayName: String(event.chatter_user_name || event.chatter_user_login || ""),
-        messageText: String(event.message?.text || ""),
-        badges: Array.isArray(event.badges)
-            ? event.badges.map((badge) => ({
-                name: badge.set_id,
-                version: badge.id,
-            }))
-            : [],
-    };
-}
-function verifyEventSubSignature(headers, body) {
-    const messageId = headers.get("twitch-eventsub-message-id");
-    const timestamp = headers.get("twitch-eventsub-message-timestamp");
-    const signature = headers.get("twitch-eventsub-message-signature");
-    if (!messageId || !timestamp || !signature) {
-        return false;
-    }
-    const expected = `sha256=${node_crypto_1.default
-        .createHmac("sha256", (0, env_1.assertEnv)("TWITCH_EVENTSUB_SECRET", env_1.milesandmorebotEnv.eventSubSecret))
-        .update(messageId + timestamp + body)
-        .digest("hex")}`;
-    const expectedBuf = Buffer.from(expected);
-    const signatureBuf = Buffer.from(signature);
-    if (expectedBuf.length !== signatureBuf.length) {
-        return false;
-    }
-    return node_crypto_1.default.timingSafeEqual(expectedBuf, signatureBuf);
-}
-function isFreshEventSubTimestamp(headers) {
-    const timestamp = headers.get("twitch-eventsub-message-timestamp");
-    if (!timestamp) {
-        return false;
-    }
-    const ageMs = Math.abs(Date.now() - Date.parse(timestamp));
-    return ageMs <= 10 * 60 * 1000;
-}
-async function createChatMessageSubscription(channelName) {
-    await assertValidBotCredentials();
-    const [channel, botUser] = await Promise.all([getUserByLogin(channelName), getBotUser()]);
-    if (!channel || !botUser) {
-        throw new Error(`Unable to create EventSub subscription for ${channelName}`);
-    }
-    try {
-        const response = await twitchFetch("/eventsub/subscriptions", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                type: "channel.chat.message",
-                version: "1",
-                condition: {
-                    broadcaster_user_id: channel.id,
-                    user_id: botUser.id,
-                },
-                transport: {
-                    method: "webhook",
-                    callback: env_1.milesandmorebotEnv.eventSubCallbackUrl,
-                    secret: (0, env_1.assertEnv)("TWITCH_EVENTSUB_SECRET", env_1.milesandmorebotEnv.eventSubSecret),
-                },
-            }),
-        }, "app");
-        const subscription = response.data?.[0];
-        if (!subscription) {
-            throw new Error(`Twitch did not return a subscription for ${channelName}`);
-        }
-        await storage_1.repositories.eventSubSubscriptions.set(channelName, {
-            id: subscription.id,
-            status: subscription.status,
-            broadcaster_user_id: channel.id,
-            channel_name: channelName,
-            created_at: subscription.created_at,
-        });
-        await logger_1.milesandmorebotLogger.info(`[EventSub] subscribed to #${channelName}`);
-        return true;
-    }
-    catch (error) {
-        if (error instanceof TwitchRequestError && error.status === 403) {
-            await logger_1.milesandmorebotLogger.info(`[EventSub] HTTP 403 for #${channelName} (not authorized). Falling back to IRC.`);
-            return false;
-        }
-        throw error;
-    }
-}
-async function deleteChatMessageSubscription(channelName) {
-    const current = await storage_1.repositories.eventSubSubscriptions.get(channelName);
-    if (!current) {
-        return;
-    }
-    await twitchFetch(`/eventsub/subscriptions?id=${encodeURIComponent(current.id)}`, {
-        method: "DELETE",
-    }, "app");
-    await storage_1.repositories.eventSubSubscriptions.removeByChannel(channelName);
-    await logger_1.milesandmorebotLogger.info(`[EventSub] unsubscribed from #${channelName}`);
 }
 async function resolveUserId(login) {
     const user = await getUserByLogin(login);
@@ -559,15 +413,11 @@ async function getBotRuntimeSettings() {
 async function restartBotRuntime() {
     await storage_1.repositories.runtimeConfig.clearBotCredentials();
     await seedRuntimeBotCredentialsFromEnv();
-    clearAppAccessTokenCache();
+    clearBotCredentialCache();
     const { resetIrcClient } = await Promise.resolve().then(() => __importStar(require("./irc")));
     await resetIrcClient("runtime restart");
     const inspection = await assertValidBotCredentials();
-    const syncErrors = await syncManagedChannelSubscriptions();
-    if (syncErrors.length > 0) {
-        const summary = syncErrors.map(({ channelName, reason }) => `#${channelName}: ${reason}`).join(" | ");
-        throw new Error(`Neu laden fehlgeschlagen. ${summary}`);
-    }
+    await syncManagedIrcChannels();
     const now = Date.now();
     await Promise.all([storage_1.repositories.status.restart(now), storage_1.repositories.runtimeConfig.markRestarted(now)]);
     await logger_1.milesandmorebotLogger.info("[Runtime] bot runtime restarted");
