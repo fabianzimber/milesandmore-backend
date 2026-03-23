@@ -394,5 +394,101 @@ export function createServer() {
     }
   });
 
+  // Separate bot authorization flow using the BOT client ID.
+  // Broadcasters must authorize channel:bot against the bot's own application
+  // so Twitch associates the permission with the bot's client ID.
+  app.get("/api/twitch/bot-authorize", async (request, reply) => {
+    const botClientId = milesandmorebotEnv.twitchBotClientId;
+    if (!botClientId) {
+      return error(reply, "TWITCH_BOT_CLIENT_ID is not configured", 500);
+    }
+    const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
+    const redirectUri = new URL("/api/twitch/bot-callback", url.origin).toString();
+    const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
+    authUrl.searchParams.set("client_id", botClientId);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "channel:bot");
+    authUrl.searchParams.set("force_verify", "true");
+    return reply.redirect(authUrl.toString());
+  });
+
+  app.get("/api/twitch/bot-callback", async (request, reply) => {
+    const qs = request.query as { code?: string; error?: string };
+    if (qs.error) {
+      return error(reply, qs.error, 400);
+    }
+    if (!qs.code) {
+      return error(reply, "Missing code parameter", 400);
+    }
+
+    const botClientId = milesandmorebotEnv.twitchBotClientId;
+    const botClientSecret = milesandmorebotEnv.twitchBotClientSecret;
+    if (!botClientId || !botClientSecret) {
+      return error(reply, "TWITCH_BOT_CLIENT_ID and TWITCH_BOT_CLIENT_SECRET must be configured", 500);
+    }
+
+    const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
+    const redirectUri = new URL("/api/twitch/bot-callback", url.origin).toString();
+
+    const tokenResponse = await fetch("https://id.twitch.tv/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: botClientId,
+        client_secret: botClientSecret,
+        code: qs.code,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      return error(reply, "Failed to exchange token", 400);
+    }
+
+    const tokenData = (await tokenResponse.json()) as { access_token: string };
+    const validateResponse = await fetch("https://id.twitch.tv/oauth2/validate", {
+      headers: { Authorization: `OAuth ${tokenData.access_token}` },
+    });
+
+    if (!validateResponse.ok) {
+      return error(reply, "Failed to validate token", 400);
+    }
+
+    const validateData = (await validateResponse.json()) as { login: string };
+    const channelLogin = validateData.login;
+
+    try {
+      await milesandmorebotLogger.info(
+        `[BotAuth] Streamer ${channelLogin} authorized channel:bot for bot application. Creating EventSub subscription...`,
+      );
+
+      const currentChannels = await repositories.managedChannels.getAll();
+      if (currentChannels.find((channel) => channel.channel_name === channelLogin)) {
+        const success = await createChatMessageSubscription(channelLogin);
+        if (success) {
+          await partIrcChannel(channelLogin);
+        }
+      } else {
+        await milesandmorebotLogger.info(
+          `[BotAuth] Channel ${channelLogin} is not actively managed. Skipping EventSub subscription.`,
+        );
+      }
+
+      return reply.type("text/html").send(`<html>
+  <body>
+    <h1 style="font-family: sans-serif;">Erfolgreich!</h1>
+    <p style="font-family: sans-serif;">Miles &amp; More hat nun offizielle Rechte als &quot;Chat Bot&quot; in deinem Kanal <strong>${channelLogin}</strong>!</p>
+    <p style="font-family: sans-serif;">Du kannst diesen Tab schliessen.</p>
+  </body>
+</html>`);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Unknown error";
+      await milesandmorebotLogger.error(`[BotAuth] Error processing bot-callback for ${channelLogin}: ${message}`);
+      return error(reply, "Internal Server Error", 500);
+    }
+  });
+
   return app;
 }
