@@ -82,6 +82,12 @@ function formatSafeMention(username: string): string {
   return `@\u200B${username.replace(/^@+/, "")}`;
 }
 
+function countryCodeToFlag(code: string): string {
+  if (!code || code.length !== 2) return "";
+  const upper = code.toUpperCase();
+  return upper.split("").map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("");
+}
+
 async function say(channelLogin: string, message: string): Promise<void> {
   for (const part of splitMessage(message)) {
     await sendChatMessage(channelLogin, part);
@@ -283,7 +289,7 @@ export async function createFlight(
   const depName = scheduled.dep_name || scheduled.icao_from;
   const arrName = scheduled.arr_name || scheduled.icao_to;
   const flightNumber = scheduled.flight_number || `SK${scheduled.id}`;
-  say(scheduled.channel_name, `✈️ Das Boarding für ${flightNumber} (${depName}→${arrName}) hat begonnen! · 10 Minuten offen · &joinflight peepoHappy`).catch((err) =>
+  say(scheduled.channel_name, `✈️ Das Boarding für ${flightNumber} (${depName}→${arrName}) hat begonnen! | 10 Minuten offen | &joinflight peepoHappy`).catch((err) =>
     milesandmorebotLogger.error(`[Flight] failed to send boarding start message: ${err}`),
   );
 
@@ -556,10 +562,10 @@ export async function sendBoardingWarningJob(
   const depName = flight.dep_name || flight.icao_from;
   const arrName = flight.arr_name || flight.icao_to;
   if ((warningMinutes || 0) >= 5) {
-    await say(channelName, `⏰ Noch 5 Min · ${depName}→${arrName} · &joinflight DinkDonk`);
+    await say(channelName, `⏰ Noch 5 Min | ${depName}→${arrName} | &joinflight DinkDonk`);
     return;
   }
-  await say(channelName, `⏰ Letzter Aufruf monkaS · ${depName}→${arrName} · &joinflight DinkDonk`);
+  await say(channelName, `⏰ Letzter Aufruf monkaS | ${depName}→${arrName} | &joinflight DinkDonk`);
 }
 
 export async function getParticipantByHash(hash: string) {
@@ -767,9 +773,9 @@ const commands: CommandDefinition[] = [
         await context.send("🌍 Du hast leider noch keine Länder freigeschaltet. YEP");
         return;
       }
-      const names = countries.map((country) => country.country_name).join(", ");
-      const display = names.length > 400 ? `${names.slice(0, 400)}...` : names;
-      await context.send(`🌍 Du hast bereits ${countries.length} Länder bereist: ${display} Clap`);
+      const display = countries.map((country) => `${countryCodeToFlag(country.country_code)} ${country.country_name}`).join(" | ");
+      const trimmed = display.length > 400 ? `${display.slice(0, 400)}...` : display;
+      await context.send(`🌍 Du hast bereits ${countries.length} Länder bereist: ${trimmed} Clap`);
     },
   },
   {
@@ -791,8 +797,8 @@ const commands: CommandDefinition[] = [
       const arrName = flight.arr_name || flight.icao_to;
       const miles = rewards.length > 0 ? rewards[0].miles_earned : 0;
       const parts = [`🏁 ${depName}→${arrName} ist gelandet Clap`];
-      if (rewards.length > 0) parts.push(`· ${rewards.length} Pax · +${miles} Meilen peepoHappy`);
-      if (flight.arr_country_name) parts.push(`· 🌍 ${flight.arr_country_name}`);
+      if (rewards.length > 0) parts.push(`| ${rewards.length} Pax | +${miles} Meilen peepoHappy`);
+      if (flight.arr_country_name) parts.push(`| ${countryCodeToFlag(flight.arr_country || "")} ${flight.arr_country_name}`);
       await say(context.channel.login, parts.join(" "));
     },
   },
@@ -815,8 +821,8 @@ const commands: CommandDefinition[] = [
       const parts = [
         `✈️ ${flight.flight_number || flight.id} ${dep}→${arr}`,
         flight.aircraft_name ? `(${flight.aircraft_name})` : "",
-        `· ${flight.status === "boarding" ? "Boarding" : "In Flight"}`,
-        `· ${pax.length} Pax`,
+        `| ${flight.status === "boarding" ? "Boarding" : "In Flight"}`,
+        `| ${pax.length} Pax`,
       ].filter(Boolean);
       await context.send(parts.join(" "));
     },
@@ -859,7 +865,7 @@ const commands: CommandDefinition[] = [
       }
       const list = all
         .map((flight) => `${flight.flight_number || flight.id}: ${flight.dep_name || flight.icao_from}→${flight.arr_name || flight.icao_to} (${flight.status})`)
-        .join(" · ");
+        .join(" | ");
       await context.send(`✈️ ${all.length} Flüge: ${list}`);
     },
   },
@@ -920,7 +926,7 @@ const commands: CommandDefinition[] = [
         await context.send("Du hast bisher noch keine absolvierten Flüge. ✈️ KEKW");
         return;
       }
-      await context.send(`✈️ ${stats.user_name}: ${stats.total_miles.toLocaleString()} Meilen · ${stats.total_flights} Flüge · ${countries} Länder`);
+      await context.send(`✈️ ${stats.user_name}: ${stats.total_miles.toLocaleString()} Meilen | ${stats.total_flights} Flüge | ${countries} Länder`);
     },
   },
   {
@@ -974,7 +980,7 @@ const commands: CommandDefinition[] = [
       const dep = participant.dep_name || participant.icao_from || "";
       const arr = participant.arr_name || participant.icao_to || "";
       const seat = participant.seat || "TBD";
-      await context.send(`🪑 Sitz ${seat} · ${participant.flight_number || "Flug"} ${dep}→${arr} · Dashboard: ${getDashboardUrl(participant.participant_hash)}`);
+      await context.send(`🪑 Sitz ${seat} | ${participant.flight_number || "Flug"} ${dep}→${arr} | Dashboard: ${getDashboardUrl(participant.participant_hash)}`);
     },
   },
   {
@@ -996,12 +1002,12 @@ const commands: CommandDefinition[] = [
       if (flight.status === "boarding") {
         const remainingMinutes = Math.max(0, Math.ceil(((flight.end_time || Date.now()) - Date.now()) / 60_000));
         await context.send(
-          `Status: Boarding ${flight.icao_from}→${flight.icao_to} · noch ${remainingMinutes} Min · ${pax.length} Pax.`,
+          `Status: Boarding ${flight.icao_from}→${flight.icao_to} | noch ${remainingMinutes} Min | ${pax.length} Pax.`,
         );
         return;
       }
 
-      await context.send(`Status: In der Luft ${flight.icao_from}→${flight.icao_to} · ${pax.length} Pax.`);
+      await context.send(`Status: In der Luft ${flight.icao_from}→${flight.icao_to} | ${pax.length} Pax.`);
     },
   },
   {
@@ -1037,7 +1043,7 @@ const commands: CommandDefinition[] = [
         await context.send("Es sind noch keine Daten verfügbar. Sadge");
         return;
       }
-      const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.countries_count})`).join(" · ");
+      const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.countries_count})`).join(" | ");
       await context.send(`🌍 Top Länder: ${list}`);
     },
   },
@@ -1054,7 +1060,7 @@ const commands: CommandDefinition[] = [
         await context.send("Es sind noch keine Daten verfügbar. Sadge");
         return;
       }
-      const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.total_miles.toLocaleString()})`).join(" · ");
+      const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.total_miles.toLocaleString()})`).join(" | ");
       await context.send(`🏆 Top Meilen: ${list}`);
     },
   },
@@ -1140,9 +1146,8 @@ export async function handleChatMessage(ircMessage: TwitchChatMessage): Promise<
   }
 
   const userPermission = await getUserPermission(ircMessage.senderUserID, ircMessage.badges);
-  const send = async (message: string, reply = true) => {
-    const payload = reply && ircMessage.messageID ? `@${ircMessage.displayName}, ${message}` : message;
-    await say(ircMessage.channelName, payload);
+  const send = async (message: string, _reply = true) => {
+    await say(ircMessage.channelName, message);
   };
 
   if (command.name !== "unmute" && (await repositories.cooldowns.isOnCooldown(`channel:${ircMessage.channelID}:muted`))) {
