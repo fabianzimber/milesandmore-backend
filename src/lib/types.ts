@@ -23,6 +23,10 @@ export interface Flight {
   arr_name?: string;
   dep_gate?: string;
   arr_gate?: string;
+  dep_lat?: number;
+  dep_lon?: number;
+  arr_lat?: number;
+  arr_lon?: number;
   aircraft_total_seats: number;
   seat_config: string;
   current_lat?: number;
@@ -100,6 +104,8 @@ export interface SimBriefFlightPlan {
     name: string;
     gate?: string;
     country?: string;
+    lat?: number;
+    lon?: number;
   };
   destination: {
     icao: string;
@@ -107,6 +113,8 @@ export interface SimBriefFlightPlan {
     gate?: string;
     country?: string;
     country_name?: string;
+    lat?: number;
+    lon?: number;
   };
   route: string;
   cruise_altitude: number;

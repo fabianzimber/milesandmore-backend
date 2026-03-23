@@ -296,6 +296,10 @@ export const repositories = {
         boarding_hash: flight.boarding_hash,
         dep_gate: flight.dep_gate,
         arr_gate: flight.arr_gate,
+        dep_lat: flight.dep_lat,
+        dep_lon: flight.dep_lon,
+        arr_lat: flight.arr_lat,
+        arr_lon: flight.arr_lon,
         start_time: flight.start_time,
         end_time: flight.end_time,
       };
