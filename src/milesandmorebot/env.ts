@@ -27,6 +27,7 @@ export const milesandmorebotEnv = {
   twitchAppClientId: process.env.TWITCH_APP_CLIENT_ID || "",
   twitchAppClientSecret: process.env.TWITCH_APP_CLIENT_SECRET || "",
   twitchBotClientId: process.env.TWITCH_BOT_CLIENT_ID || "",
+  twitchBotClientSecret: process.env.TWITCH_BOT_CLIENT_SECRET || "",
   twitchBotAccessToken: process.env.TWITCH_BOT_ACCESS_TOKEN || "",
   twitchBotRefreshToken: process.env.TWITCH_BOT_REFRESH_TOKEN || "",
   twitchBotUsername: process.env.TWITCH_BOT_USERNAME || "",
