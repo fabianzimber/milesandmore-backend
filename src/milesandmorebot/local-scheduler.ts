@@ -15,17 +15,21 @@ const STUCK_FLIGHT_TIMEOUT_MS = 12 * 60 * 60 * 1000; // 12h max flight
 // and avoids duplicate actions.
 const QSTASH_GRACE_PERIOD_MS = 60_000; // 1 minute grace
 
-let schedulerTimer: ReturnType<typeof setInterval> | null = null;
+// Use globalThis to persist across tsx watch reloads and prevent duplicate timers
+const globalForScheduler = globalThis as unknown as {
+  localSchedulerTimer?: ReturnType<typeof setInterval>;
+  localSchedulerWarnings?: Set<string>;
+};
 
 // Track which warnings we already sent so we don't spam
-const sentWarnings = new Set<string>();
+const sentWarnings = globalForScheduler.localSchedulerWarnings ??= new Set<string>();
 
 export function startLocalScheduler(): void {
-  if (schedulerTimer) {
+  if (globalForScheduler.localSchedulerTimer) {
     return;
   }
 
-  schedulerTimer = setInterval(() => {
+  globalForScheduler.localSchedulerTimer = setInterval(() => {
     runSchedulerTick().catch((error) => {
       milesandmorebotLogger.error(
         `[LocalScheduler] tick error: ${error instanceof Error ? error.message : "unknown"}`,
@@ -38,9 +42,9 @@ export function startLocalScheduler(): void {
 }
 
 export function stopLocalScheduler(): void {
-  if (schedulerTimer) {
-    clearInterval(schedulerTimer);
-    schedulerTimer = null;
+  if (globalForScheduler.localSchedulerTimer) {
+    clearInterval(globalForScheduler.localSchedulerTimer);
+    globalForScheduler.localSchedulerTimer = undefined;
   }
 }
 
