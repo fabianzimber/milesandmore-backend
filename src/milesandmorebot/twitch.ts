@@ -83,6 +83,24 @@ const BOT_CREDENTIAL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const userCache = new Map<string, { user: TwitchUser; expiresAt: number }>();
 const USER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const USER_CACHE_MAX_SIZE = 500;
+
+function pruneUserCache(): void {
+  if (userCache.size <= USER_CACHE_MAX_SIZE) return;
+  const now = Date.now();
+  for (const [key, entry] of userCache) {
+    if (entry.expiresAt <= now) userCache.delete(key);
+  }
+  if (userCache.size > USER_CACHE_MAX_SIZE) {
+    const excess = userCache.size - USER_CACHE_MAX_SIZE;
+    let removed = 0;
+    for (const key of userCache.keys()) {
+      if (removed >= excess) break;
+      userCache.delete(key);
+      removed++;
+    }
+  }
+}
 
 function clearAppAccessTokenCache() {
   appAccessTokenCache = null;
@@ -248,7 +266,6 @@ async function getAppAccessToken(): Promise<string> {
       client_secret: assertEnv("TWITCH_APP_CLIENT_SECRET", clientSecret),
       grant_type: "client_credentials",
     }),
-    cache: "no-store",
   });
 
   if (!response.ok) {
@@ -278,7 +295,6 @@ async function twitchFetch<T>(path: string, init?: RequestInit, authMode: "bot" 
   const response = await fetch(`${TWITCH_API_BASE}${path}`, {
     ...init,
     headers: authMode === "app" ? await getAppAuthHeaders(init?.headers) : await getAuthHeaders(init?.headers),
-    cache: "no-store",
   });
 
   if (!response.ok) {
@@ -298,7 +314,6 @@ async function validateBotToken(clientId: string, accessToken: string): Promise<
     headers: {
       Authorization: `OAuth ${accessToken}`,
     },
-    cache: "no-store",
   });
 
   if (!response.ok) {
@@ -449,6 +464,7 @@ export async function getUserByLogin(login: string): Promise<TwitchUser | null> 
   const users = await getUsersByLogin([login]);
   const user = users[0] || null;
   if (user) {
+    pruneUserCache();
     userCache.set(login.toLowerCase(), { user, expiresAt: now + USER_CACHE_TTL_MS });
   }
   return user;
