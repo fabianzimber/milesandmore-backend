@@ -13,7 +13,7 @@ async function main() {
   await app.listen({ host, port });
   await milesandmorebotLogger.info(`Miles & More backend listening on ${host}:${port}`);
 
-  // Auto-restart bot runtime on boot (reconnect IRC/EventSub channels)
+  // Auto-restart bot runtime on boot (reconnect IRC channels)
   try {
     await restartBotRuntime();
     await milesandmorebotLogger.info("[Startup] Bot runtime initialized successfully");

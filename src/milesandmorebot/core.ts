@@ -11,8 +11,6 @@ import { milesandmorebotLogger } from "./logger";
 import { publishFlightJob } from "./scheduler";
 import { repositories } from "./storage";
 import {
-  createChatMessageSubscription,
-  deleteChatMessageSubscription,
   getUserByLogin,
   measurePing,
   resolveUserId,
@@ -598,11 +596,7 @@ export async function addManagedChannel(channelName: string) {
     channelCreated = true;
     await setPrefix(user.id, "&");
     await repositories.cooldowns.clearCooldown(`channel:${user.id}:muted`);
-    const eventSubSuccess = await createChatMessageSubscription(lower);
-    if (!eventSubSuccess) {
-      // Fallback to IRC
-      await joinIrcChannel(lower);
-    }
+    await joinIrcChannel(lower);
     await say(lower, "Miles & More ist jetzt an Bord. peepoHey");
     return channel;
   } catch (error) {
@@ -618,7 +612,6 @@ export async function removeManagedChannel(channelName: string) {
   const lower = channelName.toLowerCase();
   await repositories.managedChannels.remove(lower);
   await repositories.channels.remove(lower);
-  await deleteChatMessageSubscription(lower);
   await partIrcChannel(lower);
 }
 

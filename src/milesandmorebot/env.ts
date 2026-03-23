@@ -32,9 +32,6 @@ export const milesandmorebotEnv = {
   twitchBotRefreshToken: process.env.TWITCH_BOT_REFRESH_TOKEN || "",
   twitchBotUsername: process.env.TWITCH_BOT_USERNAME || "",
   twitchBotOwnerId: process.env.TWITCH_BOT_OWNER_ID || process.env.BOT_OWNER_TWITCH_ID || "",
-  eventSubSecret: process.env.TWITCH_EVENTSUB_SECRET || "",
-  eventSubCallbackUrl:
-    process.env.TWITCH_EVENTSUB_CALLBACK_URL || `${getAppUrl()}/api/twitch/eventsub`,
   qstashCurrentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY || "",
   qstashNextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY || "",
 };
