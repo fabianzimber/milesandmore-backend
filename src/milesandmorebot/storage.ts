@@ -360,6 +360,9 @@ export const repositories = {
 
     async deleteByFlight(flightId: number): Promise<void> {
       const participants = await repositories.participants.getByFlight(flightId);
+      if (participants.length === 0) {
+        return;
+      }
       const pipeline = getRedis().pipeline();
       for (const participant of participants) {
         pipeline.del(key("participant", participant.id));
