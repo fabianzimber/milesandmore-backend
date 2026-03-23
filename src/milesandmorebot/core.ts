@@ -514,7 +514,7 @@ export async function finishBoardingJob(
   }
   const assignments = await assignSeats(flightId);
   await updateFlightStatus(flightId, "in_flight");
-  await say(channelName, `✅ Boarding abgeschlossen · ${assignments.length} Passagiere · Guten Flug!`);
+  await say(channelName, `✅ Boarding abgeschlossen · ${assignments.length} Passagiere · Guten Flug! peepoLove`);
 }
 
 export async function sendBoardingWarningJob(
@@ -535,10 +535,10 @@ export async function sendBoardingWarningJob(
   const depName = flight.dep_name || flight.icao_from;
   const arrName = flight.arr_name || flight.icao_to;
   if ((warningMinutes || 0) >= 5) {
-    await say(channelName, `⏰ Noch 5 Min · ${depName}→${arrName} · &joinflight`);
+    await say(channelName, `⏰ Noch 5 Min · ${depName}→${arrName} · &joinflight DinkDonk`);
     return;
   }
-  await say(channelName, `⏰ Letzter Aufruf · ${depName}→${arrName} · &joinflight`);
+  await say(channelName, `⏰ Letzter Aufruf monkaS · ${depName}→${arrName} · &joinflight DinkDonk`);
 }
 
 export async function getParticipantByHash(hash: string) {
@@ -593,7 +593,7 @@ export async function addManagedChannel(channelName: string) {
       // Fallback to IRC
       await joinIrcChannel(lower);
     }
-    await say(lower, "Miles & More ist jetzt an Bord.");
+    await say(lower, "Miles & More ist jetzt an Bord. peepoHey");
     return channel;
   } catch (error) {
     if (channelCreated) {
@@ -713,7 +713,7 @@ const commands: CommandDefinition[] = [
       const inFlight = await repositories.flights.getByStatus("in_flight");
       const activeFlights = [...boarding, ...inFlight].filter((flight) => flight.channel_name === context.channel.login);
       if (activeFlights.length === 0) {
-        await context.send("Es gibt keinen aktiven Flug zum Abbrechen.");
+        await context.send("Es gibt aktuell keinen aktiven Flug zum Abbrechen. modCheck");
         return;
       }
       for (const flight of activeFlights) {
@@ -721,10 +721,10 @@ const commands: CommandDefinition[] = [
         const arrName = flight.arr_name || flight.icao_to;
         if (flight.status === "boarding") {
           await updateFlightStatus(flight.id, "cancelled");
-          await context.send(`❌ Das Boarding für den Flug von ${depName} nach ${arrName} wurde abgebrochen.`);
+          await context.send(`❌ Das Boarding für den Flug von ${depName} nach ${arrName} wurde abgebrochen. NOPERS`);
         } else {
           await updateFlightStatus(flight.id, "aborted");
-          await context.send(`❌ Der Flug von ${depName} nach ${arrName} wurde abgebrochen. Keine Meilen vergeben.`);
+          await context.send(`❌ Der Flug von ${depName} nach ${arrName} wurde abgebrochen. Es wurden keine Meilen vergeben. Sadge`);
         }
       }
     },
@@ -738,7 +738,7 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       await repositories.participants.deleteAll();
       await repositories.flights.deleteAll();
-      await context.send("Alle Flüge gelöscht.");
+      await context.send("Alle Flüge wurden gelöscht. 🗑️ KEKW");
     },
   },
   {
@@ -751,12 +751,12 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const countries = await repositories.userCountries.getByUser(context.sender.id);
       if (countries.length === 0) {
-        await context.send("🌍 Noch keine Länder freigeschaltet.");
+        await context.send("🌍 Du hast leider noch keine Länder freigeschaltet. YEP");
         return;
       }
       const names = countries.map((country) => country.country_name).join(", ");
       const display = names.length > 400 ? `${names.slice(0, 400)}...` : names;
-      await context.send(`🌍 ${countries.length} Länder: ${display}`);
+      await context.send(`🌍 Du hast bereits ${countries.length} Länder bereist: ${display} Clap`);
     },
   },
   {
@@ -770,7 +770,7 @@ const commands: CommandDefinition[] = [
       const inFlight = await repositories.flights.getByStatus("in_flight");
       const flight = inFlight.find((current) => current.pilot === context.sender.login);
       if (!flight) {
-        await context.send("Du hast derzeit keinen laufenden Flug.");
+        await context.send("Du befindest dich derzeit in keinem aktiven Flug. modCheck");
         return;
       }
       const rewards = await awardFlightRewards(flight.id);
@@ -778,8 +778,8 @@ const commands: CommandDefinition[] = [
       const depName = flight.dep_name || flight.icao_from;
       const arrName = flight.arr_name || flight.icao_to;
       const miles = rewards.length > 0 ? rewards[0].miles_earned : 0;
-      const parts = [`🏁 ${depName}→${arrName} gelandet`];
-      if (rewards.length > 0) parts.push(`· ${rewards.length} Pax · +${miles} Meilen`);
+      const parts = [`🏁 ${depName}→${arrName} ist gelandet Clap`];
+      if (rewards.length > 0) parts.push(`· ${rewards.length} Pax · +${miles} Meilen peepoHappy`);
       if (flight.arr_country_name) parts.push(`· 🌍 ${flight.arr_country_name}`);
       await say(context.channel.login, parts.join(" "));
     },
@@ -794,7 +794,7 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const flight = await repositories.flights.getByChannelAndStatus(context.channel.login, ["boarding", "in_flight"]);
       if (!flight) {
-        await context.send("Kein aktiver Flug.");
+        await context.send("Es gibt aktuell keinen aktiven Flug. modCheck");
         return;
       }
       const dep = flight.dep_name || flight.icao_from;
@@ -819,13 +819,13 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const flight = await repositories.flights.getByChannelAndStatus(context.channel.login, ["boarding", "in_flight"]);
       if (!flight) {
-        await context.send("Kein aktiver Flug.");
+        await context.send("Es gibt aktuell keinen aktiven Flug. modCheck");
         return;
       }
 
       const passengers = await repositories.participants.getByFlight(flight.id);
       if (passengers.length === 0) {
-        await context.send("Noch keine Passagiere an Bord.");
+        await context.send("Es sind noch keine Passagiere an Bord. monkaW");
         return;
       }
 
@@ -842,7 +842,7 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const all = [...(await repositories.flights.getByStatus("boarding")), ...(await repositories.flights.getByStatus("in_flight"))];
       if (all.length === 0) {
-        await context.send("Keine aktiven Flüge.");
+        await context.send("Es gibt derzeit keine aktiven Flüge. zzz");
         return;
       }
       const list = all
@@ -865,7 +865,7 @@ const commands: CommandDefinition[] = [
       }
       const userId = await resolveUserId(channelName);
       if (!userId) {
-        await context.send("Dieser Twitch User existiert nicht.");
+        await context.send("Dieser Twitch User existiert leider nicht. Susge");
         return;
       }
       await repositories.channels.add(channelName, userId).catch(async (error: Error & { code?: string }) => {
@@ -875,7 +875,7 @@ const commands: CommandDefinition[] = [
       });
       await repositories.ncMessages.setSent(userId);
       await addManagedChannel(channelName);
-      await context.send(`Ich bin jetzt in @${channelName} aktiv.`);
+      await context.send(`Ich bin jetzt in @${channelName} aktiv. peepoHappy`);
     },
   },
   {
@@ -888,12 +888,12 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const activeFlight = await repositories.flights.getByChannelAndStatus(context.channel.login, ["boarding"]);
       if (!activeFlight || (activeFlight.end_time || 0) < Date.now()) {
-        await context.send("Es gibt derzeit keinen aktiven Flug, dem du beitreten kannst.");
+        await context.send("Es gibt aktuell keinen aktiven Flug, dem du beitreten könntest. NOPERS");
         return;
       }
       const result = await addParticipant(activeFlight.id, context.sender.id, context.sender.login);
       if (result.alreadyJoined) {
-        await context.send(`Bereits beigetreten, ${context.sender.login}.`);
+        await context.send(`Du bist bereits an Bord, ${context.sender.login}! KEKW`);
         return;
       }
       const boardingPass = generateBoardingPass(result.participant, activeFlight);
@@ -912,7 +912,7 @@ const commands: CommandDefinition[] = [
       const stats = await repositories.userMiles.get(context.sender.id);
       const countries = await repositories.userCountries.countByUser(context.sender.id);
       if (!stats) {
-        await context.send("Noch keine Flüge ✈️");
+        await context.send("Du hast bisher noch keine absolvierten Flüge. ✈️ KEKW");
         return;
       }
       await context.send(`✈️ ${stats.user_name}: ${stats.total_miles.toLocaleString()} Meilen · ${stats.total_flights} Flüge · ${countries} Länder`);
@@ -927,7 +927,7 @@ const commands: CommandDefinition[] = [
     permissionLevel: permissions.mod,
     async execute(context) {
       await repositories.cooldowns.setCooldown(`channel:${context.channel.id}:muted`, 12 * 60 * 60);
-      await context.send("🔇 Bot stumm für 12h. &unmute zum Aufheben.");
+      await context.send("🔇 Der Bot ist nun für 12 Stunden stummgeschaltet. Modge");
     },
   },
   {
@@ -963,7 +963,7 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const participant = await repositories.participants.getActiveByUser(context.sender.id);
       if (!participant) {
-        await context.send("Du bist keinem aktiven Flug zugeordnet.");
+        await context.send("Du bist derzeit keinem aktiven Flug zugeordnet. modCheck");
         return;
       }
       const dep = participant.dep_name || participant.icao_from || "";
@@ -983,7 +983,7 @@ const commands: CommandDefinition[] = [
       const flight = await repositories.flights.getByChannelAndStatus(context.channel.login, ["boarding", "in_flight"]);
       if (!flight) {
         const botStatus = await repositories.status.get();
-        await context.send(`Status: bereit · ${botStatus.channels} Channels aktiv.`);
+        await context.send(`Status: bereit · In ${botStatus.channels} Channels aktiv. peepoHappy`);
         return;
       }
 
@@ -1020,7 +1020,7 @@ const commands: CommandDefinition[] = [
       const depName = flight.dep_name || flight.icao_from;
       const arrName = flight.arr_name || flight.icao_to;
       const flightNumber = flight.flight_number || `SK${flight.id}`;
-      await say(context.channel.login, `✈️ Boarding ${flightNumber} · ${depName}→${arrName} · 10 Min offen · &joinflight`);
+      await say(context.channel.login, `✈️ Das Boarding für ${flightNumber} (${depName}→${arrName}) hat begonnen! · 10 Minuten offen · &joinflight peepoHappy`);
     },
   },
   {
@@ -1033,7 +1033,7 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const top = await repositories.userCountries.getTopCountries(5);
       if (top.length === 0) {
-        await context.send("Noch keine Daten.");
+        await context.send("Es sind noch keine Daten verfügbar. Sadge");
         return;
       }
       const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.countries_count})`).join(" · ");
@@ -1050,7 +1050,7 @@ const commands: CommandDefinition[] = [
     async execute(context) {
       const top = await repositories.userMiles.getTopMiles(5);
       if (top.length === 0) {
-        await context.send("Noch keine Daten.");
+        await context.send("Es sind noch keine Daten verfügbar. Sadge");
         return;
       }
       const list = top.map((entry, index) => `${index + 1}. ${entry.user_name} (${entry.total_miles.toLocaleString()})`).join(" · ");
@@ -1085,7 +1085,7 @@ const commands: CommandDefinition[] = [
       const key = `channel:${context.channel.id}:muted`;
       const wasMuted = await repositories.cooldowns.isOnCooldown(key);
       await repositories.cooldowns.clearCooldown(key);
-      await context.send(wasMuted ? "🔊 Bot ist wieder aktiv." : "Bot war nicht stummgeschaltet.");
+      await context.send(wasMuted ? "🔊 Der Bot ist wieder aktiv. PogChamp" : "Der Bot war nicht stummgeschaltet. KEKW");
     },
   },
 ];
@@ -1187,21 +1187,21 @@ export async function handleChatMessage(ircMessage: TwitchChatMessage): Promise<
   if (!isExempt && command.cooldown.global && (await repositories.cooldowns.isOnCooldown(`global:${command.name}`))) {
     if (!(await repositories.cooldowns.isOnCooldown(`notice:cooldown:global:${command.name}:${ircMessage.channelID}`))) {
       await repositories.cooldowns.setCooldown(`notice:cooldown:global:${command.name}:${ircMessage.channelID}`, 3);
-      await send("Bitte kurz warten (Cooldown).", false);
+      await send("Bitte kurz warten. (Cooldown) DinkDonk", false);
     }
     return true;
   }
   if (!isExempt && command.cooldown.user && (await repositories.cooldowns.isOnCooldown(`user:${command.name}:${ircMessage.senderUserID}`))) {
     if (!(await repositories.cooldowns.isOnCooldown(`notice:cooldown:user:${command.name}:${ircMessage.senderUserID}`))) {
       await repositories.cooldowns.setCooldown(`notice:cooldown:user:${command.name}:${ircMessage.senderUserID}`, 3);
-      await send("Bitte kurz warten (Cooldown).", false);
+      await send("Bitte kurz warten. (Cooldown) DinkDonk", false);
     }
     return true;
   }
   if (!isExempt && command.cooldown.channel && (await repositories.cooldowns.isOnCooldown(`channel:${command.name}:${ircMessage.channelID}`))) {
     if (!(await repositories.cooldowns.isOnCooldown(`notice:cooldown:channel:${command.name}:${ircMessage.channelID}`))) {
       await repositories.cooldowns.setCooldown(`notice:cooldown:channel:${command.name}:${ircMessage.channelID}`, 3);
-      await send("Bitte kurz warten (Cooldown).", false);
+      await send("Bitte kurz warten. (Cooldown) DinkDonk", false);
     }
     return true;
   }
