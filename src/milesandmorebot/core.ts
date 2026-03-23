@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { getAirportCoords } from "../lib/airports";
 import type {
   Flight,
   Participant,
@@ -239,6 +240,13 @@ export async function createFlight(
     throw new Error("There is already an active flight in this channel");
   }
 
+  const depCoords = flightData.dep_lat != null
+    ? { lat: flightData.dep_lat, lon: flightData.dep_lon! }
+    : getAirportCoords(flightData.icao_from);
+  const arrCoords = flightData.arr_lat != null
+    ? { lat: flightData.arr_lat, lon: flightData.arr_lon! }
+    : getAirportCoords(flightData.icao_to);
+
   const startTime = Date.now();
   const closeAt = startTime + 10 * 60 * 1000;
   const warningConfig = computeWarningConfig(closeAt, startTime);
@@ -262,6 +270,10 @@ export async function createFlight(
     arr_name: flightData.arr_name,
     dep_gate: flightData.dep_gate,
     arr_gate: flightData.arr_gate,
+    dep_lat: depCoords?.lat,
+    dep_lon: depCoords?.lon,
+    arr_lat: arrCoords?.lat,
+    arr_lon: arrCoords?.lon,
     aircraft_total_seats: flightData.aircraft_total_seats || 180,
     seat_config: flightData.seat_config || "3-3",
     boarding_hash: nanoid(12),
@@ -664,6 +676,8 @@ export async function fetchSimBriefFlightPlan(pilotId: string): Promise<SimBrief
       name: String((data.origin as { name?: string } | undefined)?.name || ""),
       gate: String((data.origin as { plan_rwy?: string } | undefined)?.plan_rwy || ""),
       country: String((data.origin as { country?: string } | undefined)?.country || ""),
+      lat: parseFloat(String((data.origin as { pos_lat?: string } | undefined)?.pos_lat || "")) || undefined,
+      lon: parseFloat(String((data.origin as { pos_long?: string } | undefined)?.pos_long || "")) || undefined,
     },
     destination: {
       icao: String((data.destination as { icao_code?: string } | undefined)?.icao_code || ""),
@@ -671,6 +685,8 @@ export async function fetchSimBriefFlightPlan(pilotId: string): Promise<SimBrief
       gate: String((data.destination as { plan_rwy?: string } | undefined)?.plan_rwy || ""),
       country: String((data.destination as { country?: string } | undefined)?.country || ""),
       country_name: String((data.destination as { country_name?: string; country?: string } | undefined)?.country_name || (data.destination as { country?: string } | undefined)?.country || ""),
+      lat: parseFloat(String((data.destination as { pos_lat?: string } | undefined)?.pos_lat || "")) || undefined,
+      lon: parseFloat(String((data.destination as { pos_long?: string } | undefined)?.pos_long || "")) || undefined,
     },
     route: String((data.general as { route?: string } | undefined)?.route || ""),
     cruise_altitude: Number.parseInt(String((data.general as { initial_altitude?: string } | undefined)?.initial_altitude || "35000"), 10),
