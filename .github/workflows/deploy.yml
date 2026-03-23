@@ -1,0 +1,44 @@
+name: Deploy to Fly.io
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy & Restart
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Wait for deployment to be healthy
+        run: |
+          echo "Waiting for new deployment to become healthy..."
+          sleep 15
+
+      - name: Restart bot runtime
+        run: |
+          BACKEND_URL="${{ secrets.BACKEND_PUBLIC_URL }}"
+          if [ -z "$BACKEND_URL" ]; then
+            echo "BACKEND_PUBLIC_URL secret not set, skipping runtime restart"
+            exit 0
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${BACKEND_URL}/bot/restart" \
+            -H "Content-Type: application/json" \
+            -H "x-internal-job-secret: ${{ secrets.INTERNAL_JOB_SECRET }}")
+          if [ "$STATUS" = "200" ]; then
+            echo "Bot runtime restarted successfully"
+          else
+            echo "Warning: Bot restart returned HTTP $STATUS (may restart automatically on deploy)"
+          fi
