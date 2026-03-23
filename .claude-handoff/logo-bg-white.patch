@@ -1,0 +1,68 @@
+From 2537e9123cdd1c90dd7599816c511af8164422e6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Mar 2026 13:17:46 +0000
+Subject: [PATCH] fix: ensure logo always has white background
+
+Add white background rect to logo.svg and bg-white class to all
+logo Image components (leaderboard, admin, commands pages).
+
+https://claude.ai/code/session_01Ji5os4Movj4Nd9W621Xzan
+---
+ public/logo.svg                                      | 1 +
+ src/components/admin/AdminDashboard.tsx              | 2 +-
+ src/components/commands/CommandsPageClient.tsx       | 2 +-
+ src/components/leaderboard/LeaderboardPageClient.tsx | 2 +-
+ 4 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/public/logo.svg b/public/logo.svg
+index 4fda74a..0e00f53 100644
+--- a/public/logo.svg
++++ b/public/logo.svg
+@@ -1,4 +1,5 @@
+ <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1629 1560" fill="none">
++  <rect width="1629" height="1560" fill="white"/>
+   <g transform="translate(0,1560) scale(0.1,-0.1)" fill="#3D2668" stroke="none">
+   <path d="M7930 15282 c-113 -64 -243 -140 -290 -168 -47 -28 -134 -79 -195
+ -114 -60 -35 -168 -97 -240 -138 -71 -42 -182 -105 -245 -142 -63 -37 -209
+diff --git a/src/components/admin/AdminDashboard.tsx b/src/components/admin/AdminDashboard.tsx
+index 02f70c1..c76a556 100644
+--- a/src/components/admin/AdminDashboard.tsx
++++ b/src/components/admin/AdminDashboard.tsx
+@@ -88,7 +88,7 @@ export default function AdminDashboard({
+                   className="hidden sm:block mt-1 lg:mt-2"
+                 >
+                   <div className="flex h-12 w-12 sm:h-14 sm:w-14 lg:h-16 lg:w-16 items-center justify-center rounded-2xl bg-sas-midnight shadow-[0_18px_40px_rgba(5,11,25,0.18)] overflow-hidden p-1.5">
+-                    <Image src="/logo.svg" alt="Miles & More" width={56} height={56} className="w-full h-full object-contain" />
++                    <Image src="/logo.svg" alt="Miles & More" width={56} height={56} className="w-full h-full object-contain bg-white rounded-lg" />
+                   </div>
+                 </motion.div>
+                 <div>
+diff --git a/src/components/commands/CommandsPageClient.tsx b/src/components/commands/CommandsPageClient.tsx
+index 257a974..b1c258a 100644
+--- a/src/components/commands/CommandsPageClient.tsx
++++ b/src/components/commands/CommandsPageClient.tsx
+@@ -88,7 +88,7 @@ export default function CommandsPageClient({ initialCommands }: { initialCommand
+           <div className="page-frame relative">
+             <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7 }}>
+               <div className="flex items-center gap-3 mb-4 sm:mb-6">
+-                <Image src="/logo.svg" alt="Miles & More Logo" width={36} height={36} className="rounded-lg" />
++                <Image src="/logo.svg" alt="Miles & More Logo" width={36} height={36} className="rounded-lg bg-white" />
+                 <p className="eyebrow">Command Atlas</p>
+               </div>
+               <div className="mt-4 sm:mt-6 lg:mt-8 grid gap-6 lg:gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-end">
+diff --git a/src/components/leaderboard/LeaderboardPageClient.tsx b/src/components/leaderboard/LeaderboardPageClient.tsx
+index f4910d6..eb3356e 100644
+--- a/src/components/leaderboard/LeaderboardPageClient.tsx
++++ b/src/components/leaderboard/LeaderboardPageClient.tsx
+@@ -103,7 +103,7 @@ export default function LeaderboardPageClient({
+               transition={{ duration: 0.7 }}
+             >
+               <div className="flex items-center gap-3 mb-4 sm:mb-6">
+-                <Image src="/logo.svg" alt="Miles & More Logo" width={36} height={36} className="rounded-lg" />
++                <Image src="/logo.svg" alt="Miles & More Logo" width={36} height={36} className="rounded-lg bg-white" />
+                 <p className="eyebrow">Global Rankings</p>
+               </div>
+ 
+-- 
+2.43.0
+
