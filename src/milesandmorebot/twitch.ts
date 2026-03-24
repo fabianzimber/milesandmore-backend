@@ -114,6 +114,12 @@ export async function refreshBotAccessToken(): Promise<boolean> {
     return false;
   }
 
+  const refreshLock = await repositories.locks.acquire("twitch:token-refresh", 60);
+  if (!refreshLock) {
+    await milesandmorebotLogger.info("[TokenRefresh] Ein anderer Prozess erneuert den Token bereits, ueberspringe.");
+    return false;
+  }
+
   try {
     const params = new URLSearchParams({
       client_id: credentials.botClientId,
@@ -163,6 +169,8 @@ export async function refreshBotAccessToken(): Promise<boolean> {
       `[TokenRefresh] Refresh fehlgeschlagen: ${error instanceof Error ? error.message : "unknown"}`,
     );
     return false;
+  } finally {
+    await repositories.locks.release("twitch:token-refresh", refreshLock);
   }
 }
 function normalizeAccessToken(token: string): string {

@@ -170,6 +170,49 @@ function computeWarningConfig(closeAt, now = Date.now()) {
 function getLifecycleVersion(flight) {
     return Math.max(1, flight.lifecycle_version || 1);
 }
+function badRequestError(message) {
+    const error = new Error(message);
+    error.statusCode = 400;
+    return error;
+}
+function canTransitionFlightStatus(current, next) {
+    if (current === next) {
+        return true;
+    }
+    return next !== "boarding";
+}
+function parseFiniteNumber(value) {
+    if (value === null || value === undefined || value === "") {
+        return undefined;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+function parseBooleanLike(value) {
+    if (value === null || value === undefined || value === "") {
+        return undefined;
+    }
+    if (typeof value === "boolean") {
+        return value;
+    }
+    if (typeof value === "number") {
+        if (value === 1)
+            return true;
+        if (value === 0)
+            return false;
+        return undefined;
+    }
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["true", "1", "yes", "on"].includes(normalized)) {
+            return true;
+        }
+        if (["false", "0", "no", "off"].includes(normalized)) {
+            return false;
+        }
+    }
+    return undefined;
+}
 async function scheduleFlightLifecycle(flight) {
     const warningDelay = Math.max(0, Math.floor(((flight.warning_at || 0) - Date.now()) / 1000));
     const closeDelay = Math.max(0, Math.floor(((flight.close_at || 0) - Date.now()) / 1000));
@@ -197,63 +240,73 @@ async function createFlight(flightData) {
     if (flightData.icao_from === flightData.icao_to) {
         throw new Error("Departure and arrival airports must be different");
     }
-    const existing = await storage_1.repositories.flights.getByChannelAndStatus(flightData.channel_name, ["boarding", "in_flight"]);
-    if (existing) {
-        throw new Error("There is already an active flight in this channel");
+    const lockToken = await storage_1.repositories.locks.acquire(`flight:create:${flightData.channel_name.toLowerCase()}`, 15);
+    if (!lockToken) {
+        throw new Error("Another flight creation is already in progress for this channel");
     }
-    // Clean up old completed/cancelled/aborted flights in this channel.
-    // Participant records are deleted so stale data (e.g. boarding status) does
-    // not bleed into the new flight. Awarded miles are stored separately in
-    // userMiles and are not affected.
-    const oldFlights = await storage_1.repositories.flights.getAllByChannelAndStatus(flightData.channel_name, ["completed", "cancelled", "aborted"]);
-    for (const old of oldFlights) {
-        await storage_1.repositories.participants.deleteByFlight(old.id);
-        await storage_1.repositories.flights.delete(old.id);
+    let flight;
+    try {
+        const existing = await storage_1.repositories.flights.getByChannelAndStatus(flightData.channel_name, ["boarding", "in_flight"]);
+        if (existing) {
+            throw new Error("There is already an active flight in this channel");
+        }
+        // Clean up old completed/cancelled/aborted flights in this channel.
+        // Participant records are deleted so stale data (e.g. boarding status) does
+        // not bleed into the new flight. Awarded miles are stored separately in
+        // userMiles and are not affected.
+        const oldFlights = await storage_1.repositories.flights.getAllByChannelAndStatus(flightData.channel_name, ["completed", "cancelled", "aborted"]);
+        for (const old of oldFlights) {
+            await storage_1.repositories.participants.deleteByFlight(old.id);
+            await storage_1.repositories.flights.delete(old.id);
+        }
+        const depCoords = flightData.dep_lat != null
+            ? { lat: flightData.dep_lat, lon: flightData.dep_lon }
+            : (0, airports_1.getAirportCoords)(flightData.icao_from);
+        const arrCoords = flightData.arr_lat != null
+            ? { lat: flightData.arr_lat, lon: flightData.arr_lon }
+            : (0, airports_1.getAirportCoords)(flightData.icao_to);
+        const startTime = Date.now();
+        const closeAt = startTime + 10 * 60 * 1000;
+        const warningConfig = computeWarningConfig(closeAt, startTime);
+        flight = await storage_1.repositories.flights.create({
+            channel_name: flightData.channel_name,
+            icao_from: flightData.icao_from.toUpperCase(),
+            icao_to: flightData.icao_to.toUpperCase(),
+            start_time: startTime,
+            end_time: closeAt,
+            status: "boarding",
+            pilot: flightData.pilot || flightData.channel_name,
+            simbrief_ofp_id: flightData.simbrief_ofp_id,
+            aircraft_icao: flightData.aircraft_icao,
+            aircraft_name: flightData.aircraft_name,
+            flight_number: flightData.flight_number,
+            route: flightData.route,
+            cruise_altitude: flightData.cruise_altitude,
+            distance_nm: flightData.distance_nm,
+            estimated_time_enroute: flightData.estimated_time_enroute,
+            dep_name: flightData.dep_name,
+            arr_name: flightData.arr_name,
+            dep_gate: flightData.dep_gate,
+            arr_gate: flightData.arr_gate,
+            dep_lat: depCoords?.lat,
+            dep_lon: depCoords?.lon,
+            arr_lat: arrCoords?.lat,
+            arr_lon: arrCoords?.lon,
+            aircraft_total_seats: flightData.aircraft_total_seats || 180,
+            seat_config: flightData.seat_config || "3-3",
+            boarding_hash: (0, nanoid_1.nanoid)(12),
+            dep_country: flightData.dep_country,
+            arr_country: flightData.arr_country,
+            arr_country_name: flightData.arr_country_name,
+            warning_at: warningConfig.warningAt,
+            close_at: closeAt,
+            lifecycle_version: 1,
+            created_at: startTime,
+        });
     }
-    const depCoords = flightData.dep_lat != null
-        ? { lat: flightData.dep_lat, lon: flightData.dep_lon }
-        : (0, airports_1.getAirportCoords)(flightData.icao_from);
-    const arrCoords = flightData.arr_lat != null
-        ? { lat: flightData.arr_lat, lon: flightData.arr_lon }
-        : (0, airports_1.getAirportCoords)(flightData.icao_to);
-    const startTime = Date.now();
-    const closeAt = startTime + 10 * 60 * 1000;
-    const warningConfig = computeWarningConfig(closeAt, startTime);
-    const flight = await storage_1.repositories.flights.create({
-        channel_name: flightData.channel_name,
-        icao_from: flightData.icao_from.toUpperCase(),
-        icao_to: flightData.icao_to.toUpperCase(),
-        start_time: startTime,
-        end_time: closeAt,
-        status: "boarding",
-        pilot: flightData.pilot || flightData.channel_name,
-        simbrief_ofp_id: flightData.simbrief_ofp_id,
-        aircraft_icao: flightData.aircraft_icao,
-        aircraft_name: flightData.aircraft_name,
-        flight_number: flightData.flight_number,
-        route: flightData.route,
-        cruise_altitude: flightData.cruise_altitude,
-        distance_nm: flightData.distance_nm,
-        estimated_time_enroute: flightData.estimated_time_enroute,
-        dep_name: flightData.dep_name,
-        arr_name: flightData.arr_name,
-        dep_gate: flightData.dep_gate,
-        arr_gate: flightData.arr_gate,
-        dep_lat: depCoords?.lat,
-        dep_lon: depCoords?.lon,
-        arr_lat: arrCoords?.lat,
-        arr_lon: arrCoords?.lon,
-        aircraft_total_seats: flightData.aircraft_total_seats || 180,
-        seat_config: flightData.seat_config || "3-3",
-        boarding_hash: (0, nanoid_1.nanoid)(12),
-        dep_country: flightData.dep_country,
-        arr_country: flightData.arr_country,
-        arr_country_name: flightData.arr_country_name,
-        warning_at: warningConfig.warningAt,
-        close_at: closeAt,
-        lifecycle_version: 1,
-        created_at: startTime,
-    });
+    finally {
+        await storage_1.repositories.locks.release(`flight:create:${flightData.channel_name.toLowerCase()}`, lockToken);
+    }
     let scheduled;
     try {
         scheduled = await scheduleFlightLifecycle(flight);
@@ -282,6 +335,9 @@ async function updateFlightStatus(flightId, status) {
     const current = await storage_1.repositories.flights.getById(flightId);
     if (!current) {
         return null;
+    }
+    if (!canTransitionFlightStatus(current.status, status)) {
+        throw badRequestError(`Invalid status transition: ${current.status} -> ${status}`);
     }
     const bumpLifecycle = current.status !== status;
     const updated = await storage_1.repositories.flights.update(flightId, {
@@ -416,27 +472,44 @@ async function changeSeat(participantHash, newSeat) {
     return { oldSeat, newSeat: requestedSeat };
 }
 async function addParticipant(flightId, userId, userName) {
-    const existing = await storage_1.repositories.participants.getByFlightAndUser(flightId, userId);
-    if (existing) {
-        return { alreadyJoined: true, participant: existing };
+    const lockToken = await storage_1.repositories.locks.acquire(`flight:join:${flightId}`, 10);
+    if (!lockToken) {
+        throw new Error("Boarding is busy right now. Please try again.");
     }
-    const participant = await storage_1.repositories.participants.create({
-        flight_id: flightId,
-        user_id: userId,
-        user_name: userName,
-        participant_hash: (0, nanoid_1.nanoid)(12),
-        seat: undefined,
-        joined_at: Date.now(),
-        miles_earned: 0,
-    });
-    if (!participant) {
-        const raceWinner = await storage_1.repositories.participants.getByFlightAndUser(flightId, userId);
-        if (!raceWinner) {
-            throw new Error(`Race condition: participant key exists but record not found for flight ${flightId}, user ${userId}`);
+    try {
+        const existing = await storage_1.repositories.participants.getByFlightAndUser(flightId, userId);
+        if (existing) {
+            return { alreadyJoined: true, participant: existing };
         }
-        return { alreadyJoined: true, participant: raceWinner };
+        const flight = await storage_1.repositories.flights.getById(flightId);
+        if (!flight || flight.status !== "boarding") {
+            throw new Error("Boarding is no longer active");
+        }
+        const participants = await storage_1.repositories.participants.getByFlight(flightId);
+        if (participants.length >= (flight.aircraft_total_seats || 180)) {
+            throw new Error("Dieser Flug ist bereits ausgebucht.");
+        }
+        const participant = await storage_1.repositories.participants.create({
+            flight_id: flightId,
+            user_id: userId,
+            user_name: userName,
+            participant_hash: (0, nanoid_1.nanoid)(12),
+            seat: undefined,
+            joined_at: Date.now(),
+            miles_earned: 0,
+        });
+        if (!participant) {
+            const raceWinner = await storage_1.repositories.participants.getByFlightAndUser(flightId, userId);
+            if (!raceWinner) {
+                throw new Error(`Race condition: participant key exists but record not found for flight ${flightId}, user ${userId}`);
+            }
+            return { alreadyJoined: true, participant: raceWinner };
+        }
+        return { alreadyJoined: false, participant };
     }
-    return { alreadyJoined: false, participant };
+    finally {
+        await storage_1.repositories.locks.release(`flight:join:${flightId}`, lockToken);
+    }
 }
 function generateBoardingPass(participant, flight) {
     const now = new Date();
@@ -463,30 +536,52 @@ async function awardFlightRewards(flightId) {
     if (!locked) {
         return [];
     }
-    const flight = await storage_1.repositories.flights.getById(flightId);
-    if (!flight) {
-        throw new Error("Flight not found");
-    }
-    const participants = await storage_1.repositories.participants.getByFlight(flightId);
-    const miles = Math.round(flight.distance_nm || 100);
-    const results = [];
-    for (const participant of participants) {
-        if ((participant.miles_earned || 0) > 0) {
-            continue;
+    try {
+        const flight = await storage_1.repositories.flights.getById(flightId);
+        if (!flight) {
+            throw new Error("Flight not found");
         }
-        await storage_1.repositories.participants.update(participant.id, { miles_earned: miles });
-        await storage_1.repositories.userMiles.addMiles(participant.user_id, participant.user_name, miles);
-        if (flight.arr_country) {
-            await storage_1.repositories.userCountries.unlock(participant.user_id, flight.arr_country, flight.arr_country_name || flight.arr_country, flightId);
+        const participants = await storage_1.repositories.participants.getByFlight(flightId);
+        const miles = Math.round(flight.distance_nm || 100);
+        const results = [];
+        for (const participant of participants) {
+            if ((participant.miles_earned || 0) > 0) {
+                continue;
+            }
+            let milesApplied = false;
+            let countryUnlocked = false;
+            try {
+                await storage_1.repositories.userMiles.addMiles(participant.user_id, participant.user_name, miles);
+                milesApplied = true;
+                if (flight.arr_country) {
+                    countryUnlocked = await storage_1.repositories.userCountries.unlock(participant.user_id, flight.arr_country, flight.arr_country_name || flight.arr_country, flightId);
+                }
+                const updated = await storage_1.repositories.participants.update(participant.id, { miles_earned: miles });
+                if (!updated) {
+                    throw new Error(`Participant ${participant.id} disappeared during reward processing`);
+                }
+                results.push({
+                    user_name: participant.user_name,
+                    user_id: participant.user_id,
+                    miles_earned: miles,
+                    country_unlocked: countryUnlocked ? flight.arr_country || null : null,
+                });
+            }
+            catch (error) {
+                if (countryUnlocked && flight.arr_country) {
+                    await storage_1.repositories.userCountries.remove(participant.user_id, flight.arr_country);
+                }
+                if (milesApplied) {
+                    await storage_1.repositories.userMiles.subtractMiles(participant.user_id, miles);
+                }
+                throw error;
+            }
         }
-        results.push({
-            user_name: participant.user_name,
-            user_id: participant.user_id,
-            miles_earned: miles,
-            country_unlocked: flight.arr_country || null,
-        });
+        return results;
     }
-    return results;
+    finally {
+        await storage_1.repositories.flights.releaseRewardLock(flightId);
+    }
 }
 async function finishBoardingJob(flightId, channelName, lifecycleVersion) {
     const flight = await storage_1.repositories.flights.getById(flightId);
@@ -497,6 +592,13 @@ async function finishBoardingJob(flightId, channelName, lifecycleVersion) {
         return;
     }
     const assignments = await assignSeats(flightId);
+    const latestFlight = await storage_1.repositories.flights.getById(flightId);
+    if (!latestFlight ||
+        latestFlight.status !== "boarding" ||
+        getLifecycleVersion(latestFlight) !== Math.max(1, lifecycleVersion || 1) ||
+        (latestFlight.close_at || 0) > Date.now()) {
+        return;
+    }
     await updateFlightStatus(flightId, "in_flight");
     await say(channelName, `✅ Boarding abgeschlossen · ${assignments.length} Passagiere · Guten Flug! peepoLove`);
 }
@@ -506,6 +608,10 @@ async function sendBoardingWarningJob(flightId, channelName, warningMinutes, lif
         flight.status !== "boarding" ||
         getLifecycleVersion(flight) !== Math.max(1, lifecycleVersion || 1) ||
         (flight.warning_at || 0) > Date.now()) {
+        return;
+    }
+    const warningLock = await storage_1.repositories.locks.acquire(`flight:warning:${flightId}:${Math.max(1, lifecycleVersion || 1)}`, 60 * 60);
+    if (!warningLock) {
         return;
     }
     const depName = flight.dep_name || flight.icao_from;
@@ -624,23 +730,29 @@ async function saveAircraftConfig(icaoCode, name, seatConfig, totalSeats) {
     await storage_1.repositories.aircraftConfigs.set(icaoCode, name, seatConfig, totalSeats, rows);
 }
 async function handleSimLinkIngest(payload) {
+    const lat = parseFiniteNumber(payload.latitude ?? payload.lat);
+    const lon = parseFiniteNumber(payload.longitude ?? payload.lon);
+    const altitude = parseFiniteNumber(payload.altitude ?? payload.alt);
+    const speed = parseFiniteNumber(payload.ground_speed ?? payload.speed ?? payload.groundSpeed);
+    const heading = parseFiniteNumber(payload.heading ?? payload.hdg);
+    const onGround = parseBooleanLike(payload.on_ground ?? payload.onGround);
     const normalized = {
-        lat: Number(payload.latitude ?? payload.lat ?? 0),
-        lon: Number(payload.longitude ?? payload.lon ?? 0),
-        alt: Math.round(Number(payload.altitude ?? payload.alt ?? 0)),
-        speed: Math.round(Number(payload.ground_speed ?? payload.speed ?? payload.groundSpeed ?? 0)),
-        heading: Math.round(Number(payload.heading ?? payload.hdg ?? 0)),
-        on_ground: Boolean(payload.on_ground ?? payload.onGround ?? false),
+        ...(lat !== undefined ? { lat } : {}),
+        ...(lon !== undefined ? { lon } : {}),
+        ...(altitude !== undefined ? { alt: Math.round(altitude) } : {}),
+        ...(speed !== undefined ? { speed: Math.round(speed) } : {}),
+        ...(heading !== undefined ? { heading: Math.round(heading) } : {}),
+        ...(onGround !== undefined ? { on_ground: onGround } : {}),
     };
     await storage_1.repositories.simlink.updateLastData(normalized);
     const status = await storage_1.repositories.simlink.getStatus();
     if (status.flightId) {
         await storage_1.repositories.flights.update(status.flightId, {
-            current_lat: normalized.lat,
-            current_lon: normalized.lon,
-            current_alt: normalized.alt,
-            current_speed: normalized.speed,
-            current_heading: normalized.heading,
+            ...(lat !== undefined ? { current_lat: lat } : {}),
+            ...(lon !== undefined ? { current_lon: lon } : {}),
+            ...(altitude !== undefined ? { current_alt: Math.round(altitude) } : {}),
+            ...(speed !== undefined ? { current_speed: Math.round(speed) } : {}),
+            ...(heading !== undefined ? { current_heading: Math.round(heading) } : {}),
         });
     }
     return {
@@ -1108,6 +1220,7 @@ async function handleChatMessage(ircMessage) {
         return true;
     }
     const isExempt = userPermission >= permissions.admin;
+    const cooldownKeys = [];
     if (!isExempt && command.cooldown.global && (await storage_1.repositories.cooldowns.isOnCooldown(`global:${command.name}`))) {
         if (!(await storage_1.repositories.cooldowns.isOnCooldown(`notice:cooldown:global:${command.name}:${ircMessage.channelID}`))) {
             await storage_1.repositories.cooldowns.setCooldown(`notice:cooldown:global:${command.name}:${ircMessage.channelID}`, 3);
@@ -1131,25 +1244,39 @@ async function handleChatMessage(ircMessage) {
     }
     if (!isExempt) {
         if (command.cooldown.global) {
-            await storage_1.repositories.cooldowns.setCooldown(`global:${command.name}`, command.cooldown.global);
+            const key = `global:${command.name}`;
+            await storage_1.repositories.cooldowns.setCooldown(key, command.cooldown.global);
+            cooldownKeys.push(key);
         }
         if (command.cooldown.user) {
-            await storage_1.repositories.cooldowns.setCooldown(`user:${command.name}:${ircMessage.senderUserID}`, command.cooldown.user);
+            const key = `user:${command.name}:${ircMessage.senderUserID}`;
+            await storage_1.repositories.cooldowns.setCooldown(key, command.cooldown.user);
+            cooldownKeys.push(key);
         }
         if (command.cooldown.channel) {
-            await storage_1.repositories.cooldowns.setCooldown(`channel:${command.name}:${ircMessage.channelID}`, command.cooldown.channel);
+            const key = `channel:${command.name}:${ircMessage.channelID}`;
+            await storage_1.repositories.cooldowns.setCooldown(key, command.cooldown.channel);
+            cooldownKeys.push(key);
         }
     }
-    await command.execute({
-        args,
-        channel: { id: ircMessage.channelID, login: ircMessage.channelName },
-        command,
-        displayName: ircMessage.displayName,
-        messageId: ircMessage.messageID,
-        sender: { id: ircMessage.senderUserID, login: ircMessage.senderUsername, perms: userPermission },
-        text: ircMessage.messageText,
-        send,
-    });
+    try {
+        await command.execute({
+            args,
+            channel: { id: ircMessage.channelID, login: ircMessage.channelName },
+            command,
+            displayName: ircMessage.displayName,
+            messageId: ircMessage.messageID,
+            sender: { id: ircMessage.senderUserID, login: ircMessage.senderUsername, perms: userPermission },
+            text: ircMessage.messageText,
+            send,
+        });
+    }
+    catch (error) {
+        await Promise.all(cooldownKeys.map((key) => storage_1.repositories.cooldowns.clearCooldown(key)));
+        await logger_1.milesandmorebotLogger.error(`[#${ircMessage.channelName}] command ${command.name} failed for ${ircMessage.senderUsername}: ${error instanceof Error ? error.message : String(error)}`);
+        await send("Interner Fehler beim Ausfuehren des Commands.");
+        return true;
+    }
     await storage_1.repositories.status.incrementCommandsExecuted();
     await storage_1.repositories.status.setLastEventAt();
     await logger_1.milesandmorebotLogger.irc(`[#${ircMessage.channelName}] ${ircMessage.displayName}: ${ircMessage.messageText}`);

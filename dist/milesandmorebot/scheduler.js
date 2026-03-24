@@ -1,12 +1,25 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isQStashConfigured = isQStashConfigured;
 exports.verifyQStashRequest = verifyQStashRequest;
 exports.publishFlightJob = publishFlightJob;
+const node_crypto_1 = __importDefault(require("node:crypto"));
 const qstash_1 = require("@upstash/qstash");
 const env_1 = require("./env");
 let qstashClient = null;
 let qstashReceiver = null;
+function getInternalJobHeaderSecret() {
+    if (!env_1.milesandmorebotEnv.internalJobSecret) {
+        return "";
+    }
+    return node_crypto_1.default
+        .createHash("sha256")
+        .update(`${env_1.milesandmorebotEnv.internalJobSecret}:jobs`)
+        .digest("hex");
+}
 /** Returns true when all QStash env vars are present and jobs will actually be published. */
 function isQStashConfigured() {
     return !!process.env.QSTASH_TOKEN;
@@ -37,8 +50,8 @@ function getQStashReceiver() {
  */
 async function verifyQStashRequest(request) {
     // Always allow internal-secret-only auth (local scheduler, manual calls)
-    if (env_1.milesandmorebotEnv.internalJobSecret &&
-        request.headers.get("x-internal-job-secret") === env_1.milesandmorebotEnv.internalJobSecret) {
+    if (getInternalJobHeaderSecret() &&
+        request.headers.get("x-internal-job-secret") === getInternalJobHeaderSecret()) {
         return true;
     }
     // If QStash signing keys are configured, verify the Upstash signature
@@ -72,7 +85,7 @@ async function publishFlightJob(action, body, delaySeconds) {
         delay: Math.max(0, Math.round(delaySeconds)),
         retries: 3,
         headers: {
-            "x-internal-job-secret": env_1.milesandmorebotEnv.internalJobSecret,
+            "x-internal-job-secret": getInternalJobHeaderSecret(),
         },
         deduplicationId: `${action}-${body.flightId}-${body.channelName}-${body.lifecycleVersion || 0}-${Date.now()}`,
         label: `milesandmorebot-${action}`,
