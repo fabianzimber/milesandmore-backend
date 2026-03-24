@@ -91,9 +91,9 @@ async function refreshBotAccessToken() {
         await logger_1.milesandmorebotLogger.error("[TokenRefresh] Kein Refresh-Token vorhanden — Refresh nicht moeglich.");
         return false;
     }
-    const botClientSecret = (env_1.milesandmorebotEnv.twitchBotClientSecret || "").trim();
-    if (!botClientSecret) {
-        await logger_1.milesandmorebotLogger.error("[TokenRefresh] TWITCH_BOT_CLIENT_SECRET fehlt — Refresh nicht moeglich.");
+    const refreshClientSecret = getRefreshClientSecret(credentials.botClientId);
+    if (!refreshClientSecret) {
+        await logger_1.milesandmorebotLogger.error(getMissingRefreshClientSecretMessage(credentials.botClientId));
         return false;
     }
     const refreshLock = await storage_1.repositories.locks.acquire("twitch:token-refresh", 60);
@@ -108,7 +108,7 @@ async function refreshBotAccessToken() {
     try {
         const params = new URLSearchParams({
             client_id: credentials.botClientId,
-            client_secret: botClientSecret,
+            client_secret: refreshClientSecret.clientSecret,
             grant_type: "refresh_token",
             refresh_token: credentials.refreshToken,
         });
@@ -119,7 +119,8 @@ async function refreshBotAccessToken() {
         });
         if (!response.ok) {
             const text = await response.text();
-            await logger_1.milesandmorebotLogger.error(`[TokenRefresh] Twitch refresh failed: ${response.status} ${text}`);
+            const hint = getRefreshFailureHint(text);
+            await logger_1.milesandmorebotLogger.error(`[TokenRefresh] Twitch refresh failed via ${refreshClientSecret.source}: ${response.status} ${text}${hint ? ` ${hint}` : ""}`);
             return false;
         }
         const payload = (await response.json());
@@ -169,6 +170,48 @@ function getAppCredentialSnapshot() {
         clientId: (env_1.milesandmorebotEnv.twitchAppClientId || "").trim(),
         clientSecret: (env_1.milesandmorebotEnv.twitchAppClientSecret || "").trim(),
     };
+}
+function getRefreshClientSecret(clientId) {
+    const normalizedClientId = clientId.trim();
+    if (!normalizedClientId) {
+        return null;
+    }
+    const appSnapshot = getAppCredentialSnapshot();
+    const botClientId = (env_1.milesandmorebotEnv.twitchBotClientId || "").trim();
+    const botClientSecret = (env_1.milesandmorebotEnv.twitchBotClientSecret || "").trim();
+    const candidates = [
+        {
+            clientId: botClientId,
+            clientSecret: botClientSecret,
+            source: "TWITCH_BOT_CLIENT_SECRET",
+        },
+        {
+            clientId: appSnapshot.clientId,
+            clientSecret: appSnapshot.clientSecret,
+            source: "TWITCH_APP_CLIENT_SECRET",
+        },
+    ];
+    const match = candidates.find((candidate) => candidate.clientId === normalizedClientId && !!candidate.clientSecret);
+    return match || null;
+}
+function getMissingRefreshClientSecretMessage(clientId) {
+    const configuredClientIds = [
+        (env_1.milesandmorebotEnv.twitchBotClientId || "").trim(),
+        (env_1.milesandmorebotEnv.twitchAppClientId || "").trim(),
+    ].filter(Boolean);
+    const configuredIdsHint = configuredClientIds.length > 0
+        ? ` Konfigurierte Client-IDs: ${configuredClientIds.join(", ")}.`
+        : " Es ist keine passende Twitch-Client-ID konfiguriert.";
+    return `[TokenRefresh] Kein passendes Client-Secret fuer Bot-Client-ID ${clientId || "(leer)"} gefunden.${configuredIdsHint} Ein Refresh-Token kann nur mit dem Client-Secret derselben Twitch-App erneuert werden, die den Token ausgestellt hat.`;
+}
+function getRefreshFailureHint(responseText) {
+    const normalized = responseText.toLowerCase();
+    if (normalized.includes("invalid client secret")
+        || normalized.includes("invalid refresh token")
+        || normalized.includes("invalid client")) {
+        return "Der Refresh-Token gehoert wahrscheinlich nicht zu einer der hier konfigurierten Twitch-Apps. Tokens von twitchtokengenerator.com oder einer anderen Drittanbieter-App muessen fuer deine eigene Twitch-App neu ausgestellt werden.";
+    }
+    return "";
 }
 function getEnvBotCredentialSnapshot() {
     return {
@@ -362,6 +405,9 @@ async function inspectBotCredentials() {
     }
     if (!inspection.accessToken) {
         inspection.issues.push("TWITCH_BOT_ACCESS_TOKEN fehlt.");
+    }
+    if (inspection.refreshConfigured && !getRefreshClientSecret(inspection.botClientId)) {
+        inspection.issues.push(getMissingRefreshClientSecretMessage(inspection.botClientId));
     }
     if (inspection.issues.length > 0) {
         return inspection;
