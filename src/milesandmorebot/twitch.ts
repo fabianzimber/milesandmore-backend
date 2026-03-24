@@ -46,7 +46,7 @@ type BotCredentialInspection = {
   issues: string[];
 };
 
-type RefreshClientSecretSource = "TWITCH_BOT_CLIENT_SECRET" | "TWITCH_APP_CLIENT_SECRET";
+type RefreshClientSecretSource = "TWITCH_APP_CLIENT_SECRET";
 
 type RefreshClientSecretResolution = {
   clientSecret: string;
@@ -220,31 +220,18 @@ function getRefreshClientSecret(clientId: string): RefreshClientSecretResolution
   }
 
   const appSnapshot = getAppCredentialSnapshot();
-  const botClientId = (milesandmorebotEnv.twitchBotClientId || "").trim();
-  const botClientSecret = (milesandmorebotEnv.twitchBotClientSecret || "").trim();
+  if (appSnapshot.clientId !== normalizedClientId || appSnapshot.clientSecret.trim().length === 0) {
+    return null;
+  }
 
-  const candidates: Array<{ clientId: string; clientSecret: string; source: RefreshClientSecretSource }> = [
-    {
-      clientId: botClientId,
-      clientSecret: botClientSecret,
-      source: "TWITCH_BOT_CLIENT_SECRET",
-    },
-    {
-      clientId: appSnapshot.clientId,
-      clientSecret: appSnapshot.clientSecret,
-      source: "TWITCH_APP_CLIENT_SECRET",
-    },
-  ];
-
-  const match = candidates.find((candidate) => candidate.clientId === normalizedClientId && candidate.clientSecret.trim().length > 0);
-  return match ?? null;
+  return {
+    clientSecret: appSnapshot.clientSecret,
+    source: "TWITCH_APP_CLIENT_SECRET",
+  };
 }
 
 function getMissingRefreshClientSecretMessage(clientId: string): string {
-  const configuredClientIds = [
-    (milesandmorebotEnv.twitchBotClientId || "").trim(),
-    (milesandmorebotEnv.twitchAppClientId || "").trim(),
-  ].filter(Boolean);
+  const configuredClientIds = [(milesandmorebotEnv.twitchClientId || "").trim()].filter(Boolean);
 
   const configuredIdsHint =
     configuredClientIds.length > 0
@@ -274,7 +261,7 @@ function getRefreshFailureHint(responseText: string): string {
 
 function getEnvBotCredentialSnapshot() {
   return {
-    botClientId: (milesandmorebotEnv.twitchBotClientId || "").trim(),
+    botClientId: (milesandmorebotEnv.twitchClientId || "").trim(),
     accessToken: normalizeAccessToken(milesandmorebotEnv.twitchBotAccessToken),
     refreshToken: normalizeRefreshToken(milesandmorebotEnv.twitchBotRefreshToken),
   };
@@ -360,7 +347,7 @@ async function persistBotCredentials(
 async function seedRuntimeBotCredentialsFromEnv(): Promise<BotRuntimeCredentials> {
   const credentials = getEnvBotCredentials();
   if (!credentials) {
-    throw new Error("TWITCH_BOT_CLIENT_ID, TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
+    throw new Error("TWITCH_APP_CLIENT_ID, TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
   }
   return persistBotCredentials({
     ...credentials,
@@ -372,7 +359,7 @@ async function seedRuntimeBotCredentialsFromEnv(): Promise<BotRuntimeCredentials
 async function getBotCredentialInput(): Promise<BotRuntimeCredentials> {
   const credentials = await getPreferredBotCredentials();
   if (!credentials) {
-    throw new Error("TWITCH_BOT_CLIENT_ID, TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
+    throw new Error("TWITCH_APP_CLIENT_ID, TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
   }
   return credentials;
 }
@@ -418,7 +405,7 @@ async function validateBotToken(clientId: string, accessToken: string): Promise<
 
   const payload = (await response.json()) as TwitchValidateResponse;
   if (payload.client_id !== clientId) {
-    throw new Error("TWITCH_BOT_CLIENT_ID passt nicht zum Bot-Token.");
+    throw new Error("TWITCH_APP_CLIENT_ID passt nicht zum Bot-Token.");
   }
 
   const missingScopes = REQUIRED_BOT_SCOPES.filter((scope) => !payload.scopes?.includes(scope));
@@ -494,10 +481,13 @@ async function inspectBotCredentials(): Promise<BotCredentialInspection> {
     inspection.issues.push("TWITCH_APP_CLIENT_SECRET fehlt.");
   }
   if (!inspection.botClientId) {
-    inspection.issues.push("TWITCH_BOT_CLIENT_ID fehlt.");
+    inspection.issues.push("TWITCH_APP_CLIENT_ID fehlt.");
   }
   if (!inspection.accessToken) {
     inspection.issues.push("TWITCH_BOT_ACCESS_TOKEN fehlt.");
+  }
+  if (!inspection.refreshToken) {
+    inspection.issues.push("TWITCH_BOT_REFRESH_TOKEN fehlt.");
   }
   if (inspection.refreshConfigured && !getRefreshClientSecret(inspection.botClientId)) {
     inspection.issues.push(getMissingRefreshClientSecretMessage(inspection.botClientId));

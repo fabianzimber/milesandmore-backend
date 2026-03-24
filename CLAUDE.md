@@ -49,6 +49,7 @@ No linter configured. No test runner configured. No `*.test.*` or `*.spec.*` fil
 - **Relative imports only**, no path aliases (`"./storage"`, `"../lib/types"`)
 - **`import type`** for type-only imports
 - **Bot responses and user-facing labels are in German**
+- **One Twitch Developer Application** is shared for admin OAuth, Helix requests, and bot token refresh/callbacks
 - Admin endpoints protected by `x-internal-job-secret` header via `isAdminAuthorized()`
 - New routes go in `server.ts`; new bot commands go in `core.ts`
 - All Redis access via `repositories` in `storage.ts`; all Twitch API via `twitch.ts`
