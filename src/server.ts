@@ -387,13 +387,13 @@ export function createServer() {
     }
   });
 
-  // Separate bot authorization flow using the BOT client ID.
-  // Broadcasters must authorize channel:bot against the bot's own application
-  // so Twitch associates the permission with the bot's client ID.
+  // Dedicated bot authorization flow using the same Twitch application credentials.
+  // Broadcasters still authorize channel:bot via the bot callback, but the client
+  // ID/secret are shared with the admin/Helix OAuth flow.
   app.get("/api/twitch/bot-authorize", async (request, reply) => {
-    const botClientId = milesandmorebotEnv.twitchBotClientId;
-    if (!botClientId) {
-      return error(reply, "TWITCH_BOT_CLIENT_ID is not configured", 500);
+    const twitchClientId = milesandmorebotEnv.twitchClientId;
+    if (!twitchClientId) {
+      return error(reply, "TWITCH_APP_CLIENT_ID is not configured", 500);
     }
     const state = crypto.randomUUID();
     reply.setCookie("twitch_bot_oauth_state", state, {
@@ -407,7 +407,7 @@ export function createServer() {
     const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
     const redirectUri = new URL("/api/twitch/bot-callback", url.origin).toString();
     const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
-    authUrl.searchParams.set("client_id", botClientId);
+    authUrl.searchParams.set("client_id", twitchClientId);
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("scope", "channel:bot");
@@ -431,10 +431,10 @@ export function createServer() {
       return error(reply, "Invalid or missing OAuth state", 403);
     }
 
-    const botClientId = milesandmorebotEnv.twitchBotClientId;
-    const botClientSecret = milesandmorebotEnv.twitchBotClientSecret;
-    if (!botClientId || !botClientSecret) {
-      return error(reply, "TWITCH_BOT_CLIENT_ID and TWITCH_BOT_CLIENT_SECRET must be configured", 500);
+    const twitchClientId = milesandmorebotEnv.twitchClientId;
+    const twitchClientSecret = milesandmorebotEnv.twitchClientSecret;
+    if (!twitchClientId || !twitchClientSecret) {
+      return error(reply, "TWITCH_APP_CLIENT_ID and TWITCH_APP_CLIENT_SECRET must be configured", 500);
     }
 
     const url = new URL(`${milesandmorebotEnv.appUrl}${request.url}`);
@@ -444,8 +444,8 @@ export function createServer() {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: botClientId,
-        client_secret: botClientSecret,
+        client_id: twitchClientId,
+        client_secret: twitchClientSecret,
         code: qs.code,
         grant_type: "authorization_code",
         redirect_uri: redirectUri,
@@ -470,7 +470,7 @@ export function createServer() {
 
     try {
       await milesandmorebotLogger.info(
-        `[BotAuth] Streamer ${channelLogin} authorized channel:bot for bot application.`,
+        `[BotAuth] Streamer ${channelLogin} authorized channel:bot for the shared Twitch application.`,
       );
 
       const currentChannels = await repositories.managedChannels.getAll();

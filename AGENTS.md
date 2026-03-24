@@ -73,8 +73,8 @@ Important values referenced by the app include:
 - `BACKEND_PUBLIC_URL`
 - `TWITCH_APP_CLIENT_ID`, `TWITCH_APP_CLIENT_SECRET`
 - `ADMIN_TWITCH_IDS`
-- `TWITCH_BOT_CLIENT_ID`, `TWITCH_BOT_ACCESS_TOKEN`, `TWITCH_BOT_REFRESH_TOKEN`
-- `TWITCH_BOT_USERNAME`, `TWITCH_BOT_OWNER_ID`
+- `TWITCH_BOT_ACCESS_TOKEN`, `TWITCH_BOT_REFRESH_TOKEN`
+- `TWITCH_BOT_OWNER_ID`
 - `SIMLINK_INGEST_SECRET`
 - `INTERNAL_JOB_SECRET`
 - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
@@ -84,6 +84,7 @@ Rules for agents:
 
 - Never hardcode secrets.
 - All secrets are server-side only (no browser exposure).
+- Use one Twitch Developer Application for admin OAuth, Helix requests, and bot token refresh/callbacks.
 - Access environment variables through the config object in `src/milesandmorebot/env.ts`.
 - Preserve the `INTERNAL_JOB_SECRET` header-based admin auth pattern.
 

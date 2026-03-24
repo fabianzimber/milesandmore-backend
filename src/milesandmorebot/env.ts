@@ -16,6 +16,10 @@ export function getAppUrl(): string {
   return process.env.BACKEND_PUBLIC_URL || "http://localhost:8080";
 }
 
+// Deprecated fallback for older deployments: bot client env vars now map to the single app credentials.
+const twitchClientId = process.env.TWITCH_APP_CLIENT_ID || process.env.TWITCH_BOT_CLIENT_ID || "";
+const twitchClientSecret = process.env.TWITCH_APP_CLIENT_SECRET || process.env.TWITCH_BOT_CLIENT_SECRET || "";
+
 export const milesandmorebotEnv = {
   appUrl: getAppUrl(),
   frontendUrl: process.env.FRONTEND_URL || "",
@@ -23,10 +27,10 @@ export const milesandmorebotEnv = {
   adminTwitchIds: optionalList("ADMIN_TWITCH_IDS"),
   internalJobSecret: process.env.INTERNAL_JOB_SECRET || "",
   simlinkIngestSecret: process.env.SIMLINK_INGEST_SECRET || "",
-  twitchAppClientId: process.env.TWITCH_APP_CLIENT_ID || "",
-  twitchAppClientSecret: process.env.TWITCH_APP_CLIENT_SECRET || "",
-  twitchBotClientId: process.env.TWITCH_BOT_CLIENT_ID || "",
-  twitchBotClientSecret: process.env.TWITCH_BOT_CLIENT_SECRET || "",
+  twitchAppClientId: twitchClientId,
+  twitchAppClientSecret: twitchClientSecret,
+  twitchClientId,
+  twitchClientSecret,
   twitchBotAccessToken: process.env.TWITCH_BOT_ACCESS_TOKEN || "",
   twitchBotRefreshToken: process.env.TWITCH_BOT_REFRESH_TOKEN || "",
   twitchBotOwnerId: process.env.TWITCH_BOT_OWNER_ID || "",

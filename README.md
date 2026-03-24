@@ -26,11 +26,16 @@ npm install
 
 ### 2. Configuration
 
-Copy the example environment variables and adjust them to your Twitch App/Bot and Upstash configurations:
+Copy the example environment variables and adjust them to your Twitch and Upstash configurations:
 
 ```bash
 cp .env.example .env
 ```
+
+Use a single Twitch Developer Application for all OAuth flows:
+
+- `TWITCH_APP_CLIENT_ID` / `TWITCH_APP_CLIENT_SECRET` are the only application credentials.
+- `TWITCH_BOT_ACCESS_TOKEN` / `TWITCH_BOT_REFRESH_TOKEN` belong to the bot Twitch account and must be issued for that same application.
 
 ### 3. Development Server
 
