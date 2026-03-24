@@ -290,9 +290,12 @@ export const repositories = {
         await pipeline.exec();
         return participant;
       } catch (error) {
+        const flightUserKey = key("participant", "flightUser", participant.flight_id, participant.user_id);
         const created = await repositories.participants.getById(id);
         if (!created) {
-          await redis.del(key("participant", "flightUser", participant.flight_id, participant.user_id));
+          await redis.del(flightUserKey);
+        } else {
+          await redis.persist(flightUserKey);
         }
         throw error;
       }

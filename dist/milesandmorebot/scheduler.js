@@ -50,8 +50,8 @@ function getQStashReceiver() {
  */
 async function verifyQStashRequest(request) {
     // Always allow internal-secret-only auth (local scheduler, manual calls)
-    if (getInternalJobHeaderSecret() &&
-        request.headers.get("x-internal-job-secret") === getInternalJobHeaderSecret()) {
+    const derivedSecret = getInternalJobHeaderSecret();
+    if (derivedSecret && request.headers.get("x-internal-job-secret") === derivedSecret) {
         return true;
     }
     // If QStash signing keys are configured, verify the Upstash signature

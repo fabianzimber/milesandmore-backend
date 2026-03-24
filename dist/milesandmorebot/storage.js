@@ -221,9 +221,13 @@ exports.repositories = {
                 return participant;
             }
             catch (error) {
+                const flightUserKey = key("participant", "flightUser", participant.flight_id, participant.user_id);
                 const created = await exports.repositories.participants.getById(id);
                 if (!created) {
-                    await redis.del(key("participant", "flightUser", participant.flight_id, participant.user_id));
+                    await redis.del(flightUserKey);
+                }
+                else {
+                    await redis.persist(flightUserKey);
                 }
                 throw error;
             }
@@ -276,6 +280,9 @@ exports.repositories = {
         async getByFlight(flightId) {
             const ids = await getIdsFromSortedSet(key("participants", "flight", flightId));
             return loadMany(ids, (id) => exports.repositories.participants.getById(Number(id)));
+        },
+        async countByFlight(flightId) {
+            return Number(await getRedis().zcard(key("participants", "flight", flightId)));
         },
         async getActiveByUser(userId) {
             const ids = await getIdsFromSortedSet(key("participants", "user", userId));
@@ -561,11 +568,9 @@ exports.repositories = {
             return acquired ? token : null;
         },
         async release(name, token) {
-            const redis = getRedis();
-            const current = await redis.get(lockKey(name));
-            if (current === token) {
-                await redis.del(lockKey(name));
-            }
+            // Atomic compare-and-delete via Lua script to prevent releasing another
+            // process's lock if our TTL expired between GET and DEL.
+            await getRedis().eval(`if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`, [lockKey(name)], [token]);
         },
     },
     cache: {
