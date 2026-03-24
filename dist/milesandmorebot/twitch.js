@@ -98,8 +98,10 @@ async function refreshBotAccessToken() {
     }
     const refreshLock = await storage_1.repositories.locks.acquire("twitch:token-refresh", 60);
     if (!refreshLock) {
-        await logger_1.milesandmorebotLogger.info("[TokenRefresh] Ein anderer Prozess erneuert den Token bereits.");
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await logger_1.milesandmorebotLogger.info("[TokenRefresh] Ein anderer Prozess erneuert den Token bereits, warte kurz und verwende dann aktualisierte Credentials.");
+        // Kurz warten, damit der andere Prozess den Refresh abschliessen und persistieren kann
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        // Cache leeren, damit nachfolgende Aufrufe die neuen Credentials laden
         clearBotCredentialCache();
         return true;
     }

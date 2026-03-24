@@ -175,11 +175,17 @@ function badRequestError(message) {
     error.statusCode = 400;
     return error;
 }
+const FLIGHT_STATUS_TRANSITIONS = {
+    boarding: ["in_flight", "cancelled"],
+    in_flight: ["completed", "aborted"],
+    aborted: ["in_flight"],
+    completed: [],
+    cancelled: [],
+};
 function canTransitionFlightStatus(current, next) {
-    if (current === next) {
+    if (current === next)
         return true;
-    }
-    return next !== "boarding";
+    return FLIGHT_STATUS_TRANSITIONS[current]?.includes(next) ?? false;
 }
 function parseFiniteNumber(value) {
     if (value === null || value === undefined || value === "") {
@@ -485,8 +491,8 @@ async function addParticipant(flightId, userId, userName) {
         if (!flight || flight.status !== "boarding") {
             throw new Error("Boarding is no longer active");
         }
-        const participants = await storage_1.repositories.participants.getByFlight(flightId);
-        if (participants.length >= (flight.aircraft_total_seats || 180)) {
+        const participantCount = await storage_1.repositories.participants.countByFlight(flightId);
+        if (participantCount >= (flight.aircraft_total_seats || 180)) {
             throw new Error("Dieser Flug ist bereits ausgebucht.");
         }
         const participant = await storage_1.repositories.participants.create({
@@ -591,7 +597,6 @@ async function finishBoardingJob(flightId, channelName, lifecycleVersion) {
         (flight.close_at || 0) > Date.now()) {
         return;
     }
-    const assignments = await assignSeats(flightId);
     const latestFlight = await storage_1.repositories.flights.getById(flightId);
     if (!latestFlight ||
         latestFlight.status !== "boarding" ||
@@ -599,6 +604,7 @@ async function finishBoardingJob(flightId, channelName, lifecycleVersion) {
         (latestFlight.close_at || 0) > Date.now()) {
         return;
     }
+    const assignments = await assignSeats(flightId);
     await updateFlightStatus(flightId, "in_flight");
     await say(channelName, `✅ Boarding abgeschlossen · ${assignments.length} Passagiere · Guten Flug! peepoLove`);
 }
