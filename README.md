@@ -42,8 +42,8 @@ npm run dev
 
 ## 📜 License & Credits
 
-**Non-Commercial License**  
-This project is licensed strictly for **non-commercial use**. You are free to view and modify the code for personal use or private testing, but you may not use this software, or any portion of it, for commercial purposes, monetization, or as part of a paid service.
+**CC BY-NC 4.0 License**  
+This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License**. You are free to view and modify the code for personal use or private testing, but you may not use this software, or any portion of it, for commercial purposes, monetization, or as part of a paid service.
 
 **Requirements for Credits**  
 If you showcase, adapt, or fork parts of this repository for open, non-profit projects, you **must prominently credit the original creator** in your project's `README.md` and user-facing documentation by linking back to this original code/author.
