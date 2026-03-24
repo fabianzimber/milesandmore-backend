@@ -114,6 +114,16 @@ export async function refreshBotAccessToken(): Promise<boolean> {
     return false;
   }
 
+  const refreshLock = await repositories.locks.acquire("twitch:token-refresh", 60);
+  if (!refreshLock) {
+    await milesandmorebotLogger.info("[TokenRefresh] Ein anderer Prozess erneuert den Token bereits, warte kurz und verwende dann aktualisierte Credentials.");
+    // Kurz warten, damit der andere Prozess den Refresh abschliessen und persistieren kann
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Cache leeren, damit nachfolgende Aufrufe die neuen Credentials laden
+    clearBotCredentialCache();
+    return true;
+  }
+
   try {
     const params = new URLSearchParams({
       client_id: credentials.botClientId,
@@ -163,6 +173,8 @@ export async function refreshBotAccessToken(): Promise<boolean> {
       `[TokenRefresh] Refresh fehlgeschlagen: ${error instanceof Error ? error.message : "unknown"}`,
     );
     return false;
+  } finally {
+    await repositories.locks.release("twitch:token-refresh", refreshLock);
   }
 }
 function normalizeAccessToken(token: string): string {

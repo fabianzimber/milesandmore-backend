@@ -55,6 +55,10 @@ function key(...parts: Array<string | number>): string {
   return `mb:${parts.join(":")}`;
 }
 
+function lockKey(name: string): string {
+  return key("lock", name);
+}
+
 async function nextId(name: string): Promise<number> {
   return Number(await getRedis().incr(key("seq", name)));
 }
@@ -252,6 +256,9 @@ export const repositories = {
       const result = await getRedis().set(key("reward", "lock", flightId), "1", { nx: true, ex: 3600 });
       return !!result;
     },
+    async releaseRewardLock(flightId: number): Promise<void> {
+      await getRedis().del(key("reward", "lock", flightId));
+    },
   },
 
   participants: {
@@ -262,24 +269,36 @@ export const repositories = {
       const acquired = await redis.set(
         key("participant", "flightUser", participant.flight_id, participant.user_id),
         id,
-        { nx: true },
+        { nx: true, ex: 30 },
       );
       if (!acquired) {
         return null;
       }
-      const pipeline = redis.pipeline();
-      pipeline.set(key("participant", id), participant);
-      pipeline.set(key("participant", "hash", participant.participant_hash), id);
-      pipeline.zadd(key("participants", "flight", participant.flight_id), {
-        score: participant.joined_at,
-        member: String(id),
-      });
-      pipeline.zadd(key("participants", "user", participant.user_id), {
-        score: participant.joined_at,
-        member: String(id),
-      });
-      await pipeline.exec();
-      return participant;
+      try {
+        const pipeline = redis.pipeline();
+        pipeline.set(key("participant", id), participant);
+        pipeline.set(key("participant", "hash", participant.participant_hash), id);
+        pipeline.zadd(key("participants", "flight", participant.flight_id), {
+          score: participant.joined_at,
+          member: String(id),
+        });
+        pipeline.zadd(key("participants", "user", participant.user_id), {
+          score: participant.joined_at,
+          member: String(id),
+        });
+        pipeline.persist(key("participant", "flightUser", participant.flight_id, participant.user_id));
+        await pipeline.exec();
+        return participant;
+      } catch (error) {
+        const flightUserKey = key("participant", "flightUser", participant.flight_id, participant.user_id);
+        const created = await repositories.participants.getById(id);
+        if (!created) {
+          await redis.del(flightUserKey);
+        } else {
+          await redis.persist(flightUserKey);
+        }
+        throw error;
+      }
     },
 
     async getById(id: number): Promise<Participant | null> {
@@ -336,6 +355,10 @@ export const repositories = {
       return loadMany(ids, (id) => repositories.participants.getById(Number(id)));
     },
 
+    async countByFlight(flightId: number): Promise<number> {
+      return Number(await getRedis().zcard(key("participants", "flight", flightId)));
+    },
+
     async getActiveByUser(userId: string): Promise<(Participant & Partial<Flight>) | null> {
       const ids = await getIdsFromSortedSet(key("participants", "user", userId));
       for (const id of ids) {
@@ -361,7 +384,7 @@ export const repositories = {
       return updated;
     },
 
-    async getOccupiedSeats(flightId: number): Promise<Array<Pick<Participant, "user_name" | "user_id" | "participant_hash"> & { seat?: string }>> {
+    async getOccupiedSeats(flightId: number): Promise<Array<Pick<Participant, "user_name" | "user_id"> & { seat?: string }>> {
       const participants = await repositories.participants.getByFlight(flightId);
       return participants
         .filter((participant) => participant.seat)
@@ -369,7 +392,6 @@ export const repositories = {
           user_name: participant.user_name,
           user_id: participant.user_id,
           seat: participant.seat,
-          participant_hash: participant.participant_hash,
         }));
     },
 
@@ -401,23 +423,55 @@ export const repositories = {
     },
 
     async addMiles(userId: string, userName: string, miles: number): Promise<UserMilesRecord> {
-      const current = (await repositories.userMiles.get(userId)) || {
-        user_id: userId,
-        user_name: userName,
-        total_miles: 0,
-        total_flights: 0,
-      };
-      const updated = {
-        ...current,
-        user_name: userName,
-        total_miles: current.total_miles + miles,
-        total_flights: current.total_flights + 1,
-      };
-      const pipeline = getRedis().pipeline();
-      pipeline.set(key("userMiles", userId), updated);
-      pipeline.zadd(key("leaderboard", "miles"), { score: updated.total_miles, member: userId });
-      await pipeline.exec();
-      return updated;
+      const lockToken = await repositories.locks.acquire(`userMiles:${userId}`, 10);
+      if (!lockToken) {
+        throw new Error(`Could not acquire miles update lock for user ${userId}`);
+      }
+      try {
+        const current = (await repositories.userMiles.get(userId)) || {
+          user_id: userId,
+          user_name: userName,
+          total_miles: 0,
+          total_flights: 0,
+        };
+        const updated = {
+          ...current,
+          user_name: userName,
+          total_miles: current.total_miles + miles,
+          total_flights: current.total_flights + 1,
+        };
+        const pipeline = getRedis().pipeline();
+        pipeline.set(key("userMiles", userId), updated);
+        pipeline.zadd(key("leaderboard", "miles"), { score: updated.total_miles, member: userId });
+        await pipeline.exec();
+        return updated;
+      } finally {
+        await repositories.locks.release(`userMiles:${userId}`, lockToken);
+      }
+    },
+    async subtractMiles(userId: string, miles: number): Promise<UserMilesRecord | null> {
+      const lockToken = await repositories.locks.acquire(`userMiles:${userId}`, 10);
+      if (!lockToken) {
+        throw new Error(`Could not acquire miles rollback lock for user ${userId}`);
+      }
+      try {
+        const current = await repositories.userMiles.get(userId);
+        if (!current) {
+          return null;
+        }
+        const updated = {
+          ...current,
+          total_miles: Math.max(0, current.total_miles - miles),
+          total_flights: Math.max(0, current.total_flights - 1),
+        };
+        const pipeline = getRedis().pipeline();
+        pipeline.set(key("userMiles", userId), updated);
+        pipeline.zadd(key("leaderboard", "miles"), { score: updated.total_miles, member: userId });
+        await pipeline.exec();
+        return updated;
+      } finally {
+        await repositories.locks.release(`userMiles:${userId}`, lockToken);
+      }
     },
 
     async getTopMiles(limit = 5): Promise<UserMilesRecord[]> {
@@ -459,6 +513,17 @@ export const repositories = {
 
     async countByUser(userId: string): Promise<number> {
       return Number((await getRedis().zcard(key("userCountries", "user", userId))) || 0);
+    },
+    async remove(userId: string, countryCode: string): Promise<void> {
+      const pipeline = getRedis().pipeline();
+      pipeline.del(key("userCountry", userId, countryCode));
+      pipeline.zrem(key("userCountries", "user", userId), countryCode);
+      await pipeline.exec();
+      const actualCount = await getRedis().zcard(key("userCountries", "user", userId));
+      await getRedis().zadd(key("leaderboard", "countries"), {
+        score: actualCount,
+        member: userId,
+      });
     },
 
     async getTopCountries(limit = 5): Promise<Array<UserMilesRecord & { countries_count: number }>> {
@@ -598,6 +663,23 @@ export const repositories = {
     },
     async setNextTokenRefreshAt(timestamp: number): Promise<void> {
       await getRedis().set(key("runtimeConfig", "nextTokenRefreshAt"), timestamp);
+    },
+  },
+
+  locks: {
+    async acquire(name: string, ttlSeconds: number): Promise<string | null> {
+      const token = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+      const acquired = await getRedis().set(lockKey(name), token, { nx: true, ex: ttlSeconds });
+      return acquired ? token : null;
+    },
+    async release(name: string, token: string): Promise<void> {
+      // Atomic compare-and-delete via Lua script to prevent releasing another
+      // process's lock if our TTL expired between GET and DEL.
+      await getRedis().eval(
+        `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`,
+        [lockKey(name)],
+        [token],
+      );
     },
   },
 

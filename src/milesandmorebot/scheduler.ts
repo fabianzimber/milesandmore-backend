@@ -1,9 +1,20 @@
+import crypto from "node:crypto";
 import { Client, Receiver } from "@upstash/qstash";
 import type { ScheduledFlightJob } from "../lib/types";
 import { milesandmorebotEnv } from "./env";
 
 let qstashClient: Client | null = null;
 let qstashReceiver: Receiver | null = null;
+
+function getInternalJobHeaderSecret(): string {
+  if (!milesandmorebotEnv.internalJobSecret) {
+    return "";
+  }
+  return crypto
+    .createHash("sha256")
+    .update(`${milesandmorebotEnv.internalJobSecret}:jobs`)
+    .digest("hex");
+}
 
 /** Returns true when all QStash env vars are present and jobs will actually be published. */
 export function isQStashConfigured(): boolean {
@@ -38,10 +49,8 @@ function getQStashReceiver(): Receiver | null {
  */
 export async function verifyQStashRequest(request: Request): Promise<boolean> {
   // Always allow internal-secret-only auth (local scheduler, manual calls)
-  if (
-    milesandmorebotEnv.internalJobSecret &&
-    request.headers.get("x-internal-job-secret") === milesandmorebotEnv.internalJobSecret
-  ) {
+  const derivedSecret = getInternalJobHeaderSecret();
+  if (derivedSecret && request.headers.get("x-internal-job-secret") === derivedSecret) {
     return true;
   }
 
@@ -83,7 +92,7 @@ export async function publishFlightJob(
     delay: Math.max(0, Math.round(delaySeconds)),
     retries: 3,
     headers: {
-      "x-internal-job-secret": milesandmorebotEnv.internalJobSecret,
+      "x-internal-job-secret": getInternalJobHeaderSecret(),
     },
     deduplicationId: `${action}-${body.flightId}-${body.channelName}-${body.lifecycleVersion || 0}-${Date.now()}`,
     label: `milesandmorebot-${action}`,

@@ -195,6 +195,57 @@ function getLifecycleVersion(flight: Pick<Flight, "lifecycle_version">): number 
   return Math.max(1, flight.lifecycle_version || 1);
 }
 
+function badRequestError(message: string): Error & { statusCode: number } {
+  const error = new Error(message) as Error & { statusCode: number };
+  error.statusCode = 400;
+  return error;
+}
+
+const FLIGHT_STATUS_TRANSITIONS: Record<Flight["status"], Flight["status"][]> = {
+  boarding: ["in_flight", "cancelled"],
+  in_flight: ["completed", "aborted"],
+  aborted: ["in_flight"],
+  completed: [],
+  cancelled: [],
+};
+
+function canTransitionFlightStatus(current: Flight["status"], next: Flight["status"]): boolean {
+  if (current === next) return true;
+  return FLIGHT_STATUS_TRANSITIONS[current]?.includes(next) ?? false;
+}
+
+function parseFiniteNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseBooleanLike(value: unknown): boolean | undefined {
+  if (value === null || value === undefined || value === "") {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
+}
+
 async function scheduleFlightLifecycle(flight: Flight): Promise<Flight> {
   const warningDelay = Math.max(0, Math.floor(((flight.warning_at || 0) - Date.now()) / 1000));
   const closeDelay = Math.max(0, Math.floor(((flight.close_at || 0) - Date.now()) / 1000));
@@ -236,69 +287,79 @@ export async function createFlight(
     throw new Error("Departure and arrival airports must be different");
   }
 
-  const existing = await repositories.flights.getByChannelAndStatus(flightData.channel_name, ["boarding", "in_flight"]);
-  if (existing) {
-    throw new Error("There is already an active flight in this channel");
+  const lockToken = await repositories.locks.acquire(`flight:create:${flightData.channel_name.toLowerCase()}`, 15);
+  if (!lockToken) {
+    throw new Error("Another flight creation is already in progress for this channel");
   }
 
-  // Clean up old completed/cancelled/aborted flights in this channel.
-  // Participant records are deleted so stale data (e.g. boarding status) does
-  // not bleed into the new flight. Awarded miles are stored separately in
-  // userMiles and are not affected.
-  const oldFlights = await repositories.flights.getAllByChannelAndStatus(
-    flightData.channel_name,
-    ["completed", "cancelled", "aborted"],
-  );
-  for (const old of oldFlights) {
-    await repositories.participants.deleteByFlight(old.id);
-    await repositories.flights.delete(old.id);
+  let flight: Flight;
+  try {
+    const existing = await repositories.flights.getByChannelAndStatus(flightData.channel_name, ["boarding", "in_flight"]);
+    if (existing) {
+      throw new Error("There is already an active flight in this channel");
+    }
+
+    // Clean up old completed/cancelled/aborted flights in this channel.
+    // Participant records are deleted so stale data (e.g. boarding status) does
+    // not bleed into the new flight. Awarded miles are stored separately in
+    // userMiles and are not affected.
+    const oldFlights = await repositories.flights.getAllByChannelAndStatus(
+      flightData.channel_name,
+      ["completed", "cancelled", "aborted"],
+    );
+    for (const old of oldFlights) {
+      await repositories.participants.deleteByFlight(old.id);
+      await repositories.flights.delete(old.id);
+    }
+
+    const depCoords = flightData.dep_lat != null
+      ? { lat: flightData.dep_lat, lon: flightData.dep_lon! }
+      : getAirportCoords(flightData.icao_from);
+    const arrCoords = flightData.arr_lat != null
+      ? { lat: flightData.arr_lat, lon: flightData.arr_lon! }
+      : getAirportCoords(flightData.icao_to);
+
+    const startTime = Date.now();
+    const closeAt = startTime + 10 * 60 * 1000;
+    const warningConfig = computeWarningConfig(closeAt, startTime);
+    flight = await repositories.flights.create({
+      channel_name: flightData.channel_name,
+      icao_from: flightData.icao_from.toUpperCase(),
+      icao_to: flightData.icao_to.toUpperCase(),
+      start_time: startTime,
+      end_time: closeAt,
+      status: "boarding",
+      pilot: flightData.pilot || flightData.channel_name,
+      simbrief_ofp_id: flightData.simbrief_ofp_id,
+      aircraft_icao: flightData.aircraft_icao,
+      aircraft_name: flightData.aircraft_name,
+      flight_number: flightData.flight_number,
+      route: flightData.route,
+      cruise_altitude: flightData.cruise_altitude,
+      distance_nm: flightData.distance_nm,
+      estimated_time_enroute: flightData.estimated_time_enroute,
+      dep_name: flightData.dep_name,
+      arr_name: flightData.arr_name,
+      dep_gate: flightData.dep_gate,
+      arr_gate: flightData.arr_gate,
+      dep_lat: depCoords?.lat,
+      dep_lon: depCoords?.lon,
+      arr_lat: arrCoords?.lat,
+      arr_lon: arrCoords?.lon,
+      aircraft_total_seats: flightData.aircraft_total_seats || 180,
+      seat_config: flightData.seat_config || "3-3",
+      boarding_hash: nanoid(12),
+      dep_country: flightData.dep_country,
+      arr_country: flightData.arr_country,
+      arr_country_name: flightData.arr_country_name,
+      warning_at: warningConfig.warningAt,
+      close_at: closeAt,
+      lifecycle_version: 1,
+      created_at: startTime,
+    });
+  } finally {
+    await repositories.locks.release(`flight:create:${flightData.channel_name.toLowerCase()}`, lockToken);
   }
-
-  const depCoords = flightData.dep_lat != null
-    ? { lat: flightData.dep_lat, lon: flightData.dep_lon! }
-    : getAirportCoords(flightData.icao_from);
-  const arrCoords = flightData.arr_lat != null
-    ? { lat: flightData.arr_lat, lon: flightData.arr_lon! }
-    : getAirportCoords(flightData.icao_to);
-
-  const startTime = Date.now();
-  const closeAt = startTime + 10 * 60 * 1000;
-  const warningConfig = computeWarningConfig(closeAt, startTime);
-  const flight = await repositories.flights.create({
-    channel_name: flightData.channel_name,
-    icao_from: flightData.icao_from.toUpperCase(),
-    icao_to: flightData.icao_to.toUpperCase(),
-    start_time: startTime,
-    end_time: closeAt,
-    status: "boarding",
-    pilot: flightData.pilot || flightData.channel_name,
-    simbrief_ofp_id: flightData.simbrief_ofp_id,
-    aircraft_icao: flightData.aircraft_icao,
-    aircraft_name: flightData.aircraft_name,
-    flight_number: flightData.flight_number,
-    route: flightData.route,
-    cruise_altitude: flightData.cruise_altitude,
-    distance_nm: flightData.distance_nm,
-    estimated_time_enroute: flightData.estimated_time_enroute,
-    dep_name: flightData.dep_name,
-    arr_name: flightData.arr_name,
-    dep_gate: flightData.dep_gate,
-    arr_gate: flightData.arr_gate,
-    dep_lat: depCoords?.lat,
-    dep_lon: depCoords?.lon,
-    arr_lat: arrCoords?.lat,
-    arr_lon: arrCoords?.lon,
-    aircraft_total_seats: flightData.aircraft_total_seats || 180,
-    seat_config: flightData.seat_config || "3-3",
-    boarding_hash: nanoid(12),
-    dep_country: flightData.dep_country,
-    arr_country: flightData.arr_country,
-    arr_country_name: flightData.arr_country_name,
-    warning_at: warningConfig.warningAt,
-    close_at: closeAt,
-    lifecycle_version: 1,
-    created_at: startTime,
-  });
 
   let scheduled: Flight;
   try {
@@ -334,6 +395,9 @@ export async function updateFlightStatus(flightId: number, status: Flight["statu
   const current = await repositories.flights.getById(flightId);
   if (!current) {
     return null;
+  }
+  if (!canTransitionFlightStatus(current.status, status)) {
+    throw badRequestError(`Invalid status transition: ${current.status} -> ${status}`);
   }
 
   const bumpLifecycle = current.status !== status;
@@ -484,27 +548,47 @@ export async function changeSeat(participantHash: string, newSeat: string) {
 }
 
 export async function addParticipant(flightId: number, userId: string, userName: string) {
-  const existing = await repositories.participants.getByFlightAndUser(flightId, userId);
-  if (existing) {
-    return { alreadyJoined: true, participant: existing };
+  const lockToken = await repositories.locks.acquire(`flight:join:${flightId}`, 10);
+  if (!lockToken) {
+    throw new Error("Boarding is busy right now. Please try again.");
   }
-  const participant = await repositories.participants.create({
-    flight_id: flightId,
-    user_id: userId,
-    user_name: userName,
-    participant_hash: nanoid(12),
-    seat: undefined,
-    joined_at: Date.now(),
-    miles_earned: 0,
-  });
-  if (!participant) {
-    const raceWinner = await repositories.participants.getByFlightAndUser(flightId, userId);
-    if (!raceWinner) {
-      throw new Error(`Race condition: participant key exists but record not found for flight ${flightId}, user ${userId}`);
+
+  try {
+    const existing = await repositories.participants.getByFlightAndUser(flightId, userId);
+    if (existing) {
+      return { alreadyJoined: true, participant: existing };
     }
-    return { alreadyJoined: true, participant: raceWinner };
+
+    const flight = await repositories.flights.getById(flightId);
+    if (!flight || flight.status !== "boarding") {
+      throw new Error("Boarding is no longer active");
+    }
+
+    const participantCount = await repositories.participants.countByFlight(flightId);
+    if (participantCount >= (flight.aircraft_total_seats || 180)) {
+      throw new Error("Dieser Flug ist bereits ausgebucht.");
+    }
+
+    const participant = await repositories.participants.create({
+      flight_id: flightId,
+      user_id: userId,
+      user_name: userName,
+      participant_hash: nanoid(12),
+      seat: undefined,
+      joined_at: Date.now(),
+      miles_earned: 0,
+    });
+    if (!participant) {
+      const raceWinner = await repositories.participants.getByFlightAndUser(flightId, userId);
+      if (!raceWinner) {
+        throw new Error(`Race condition: participant key exists but record not found for flight ${flightId}, user ${userId}`);
+      }
+      return { alreadyJoined: true, participant: raceWinner };
+    }
+    return { alreadyJoined: false, participant };
+  } finally {
+    await repositories.locks.release(`flight:join:${flightId}`, lockToken);
   }
-  return { alreadyJoined: false, participant };
 }
 
 function generateBoardingPass(participant: Participant, flight: Flight) {
@@ -534,35 +618,60 @@ export async function awardFlightRewards(flightId: number) {
   if (!locked) {
     return [];
   }
-  const flight = await repositories.flights.getById(flightId);
-  if (!flight) {
-    throw new Error("Flight not found");
-  }
-  const participants = await repositories.participants.getByFlight(flightId);
-  const miles = Math.round(flight.distance_nm || 100);
-  const results = [];
-  for (const participant of participants) {
-    if ((participant.miles_earned || 0) > 0) {
-      continue;
+  try {
+    const flight = await repositories.flights.getById(flightId);
+    if (!flight) {
+      throw new Error("Flight not found");
     }
-    await repositories.participants.update(participant.id, { miles_earned: miles });
-    await repositories.userMiles.addMiles(participant.user_id, participant.user_name, miles);
-    if (flight.arr_country) {
-      await repositories.userCountries.unlock(
-        participant.user_id,
-        flight.arr_country,
-        flight.arr_country_name || flight.arr_country,
-        flightId,
-      );
+    const participants = await repositories.participants.getByFlight(flightId);
+    const miles = Math.round(flight.distance_nm || 100);
+    const results = [];
+    for (const participant of participants) {
+      if ((participant.miles_earned || 0) > 0) {
+        continue;
+      }
+
+      let milesApplied = false;
+      let countryUnlocked = false;
+
+      try {
+        await repositories.userMiles.addMiles(participant.user_id, participant.user_name, miles);
+        milesApplied = true;
+
+        if (flight.arr_country) {
+          countryUnlocked = await repositories.userCountries.unlock(
+            participant.user_id,
+            flight.arr_country,
+            flight.arr_country_name || flight.arr_country,
+            flightId,
+          );
+        }
+
+        const updated = await repositories.participants.update(participant.id, { miles_earned: miles });
+        if (!updated) {
+          throw new Error(`Participant ${participant.id} disappeared during reward processing`);
+        }
+
+        results.push({
+          user_name: participant.user_name,
+          user_id: participant.user_id,
+          miles_earned: miles,
+          country_unlocked: countryUnlocked ? flight.arr_country || null : null,
+        });
+      } catch (error) {
+        if (countryUnlocked && flight.arr_country) {
+          await repositories.userCountries.remove(participant.user_id, flight.arr_country);
+        }
+        if (milesApplied) {
+          await repositories.userMiles.subtractMiles(participant.user_id, miles);
+        }
+        throw error;
+      }
     }
-    results.push({
-      user_name: participant.user_name,
-      user_id: participant.user_id,
-      miles_earned: miles,
-      country_unlocked: flight.arr_country || null,
-    });
+    return results;
+  } finally {
+    await repositories.flights.releaseRewardLock(flightId);
   }
-  return results;
 }
 
 export async function finishBoardingJob(
@@ -576,6 +685,15 @@ export async function finishBoardingJob(
     flight.status !== "boarding" ||
     getLifecycleVersion(flight) !== Math.max(1, lifecycleVersion || 1) ||
     (flight.close_at || 0) > Date.now()
+  ) {
+    return;
+  }
+  const latestFlight = await repositories.flights.getById(flightId);
+  if (
+    !latestFlight ||
+    latestFlight.status !== "boarding" ||
+    getLifecycleVersion(latestFlight) !== Math.max(1, lifecycleVersion || 1) ||
+    (latestFlight.close_at || 0) > Date.now()
   ) {
     return;
   }
@@ -597,6 +715,13 @@ export async function sendBoardingWarningJob(
     getLifecycleVersion(flight) !== Math.max(1, lifecycleVersion || 1) ||
     (flight.warning_at || 0) > Date.now()
   ) {
+    return;
+  }
+  const warningLock = await repositories.locks.acquire(
+    `flight:warning:${flightId}:${Math.max(1, lifecycleVersion || 1)}`,
+    60 * 60,
+  );
+  if (!warningLock) {
     return;
   }
   const depName = flight.dep_name || flight.icao_from;
@@ -740,23 +865,30 @@ export async function saveAircraftConfig(
 }
 
 export async function handleSimLinkIngest(payload: SimLinkIngestPayload): Promise<{ connected: boolean; lastData: Record<string, unknown> }> {
+  const lat = parseFiniteNumber(payload.latitude ?? payload.lat);
+  const lon = parseFiniteNumber(payload.longitude ?? payload.lon);
+  const altitude = parseFiniteNumber(payload.altitude ?? payload.alt);
+  const speed = parseFiniteNumber(payload.ground_speed ?? payload.speed ?? payload.groundSpeed);
+  const heading = parseFiniteNumber(payload.heading ?? payload.hdg);
+  const onGround = parseBooleanLike(payload.on_ground ?? payload.onGround);
+
   const normalized = {
-    lat: Number(payload.latitude ?? payload.lat ?? 0),
-    lon: Number(payload.longitude ?? payload.lon ?? 0),
-    alt: Math.round(Number(payload.altitude ?? payload.alt ?? 0)),
-    speed: Math.round(Number(payload.ground_speed ?? payload.speed ?? payload.groundSpeed ?? 0)),
-    heading: Math.round(Number(payload.heading ?? payload.hdg ?? 0)),
-    on_ground: Boolean(payload.on_ground ?? payload.onGround ?? false),
+    ...(lat !== undefined ? { lat } : {}),
+    ...(lon !== undefined ? { lon } : {}),
+    ...(altitude !== undefined ? { alt: Math.round(altitude) } : {}),
+    ...(speed !== undefined ? { speed: Math.round(speed) } : {}),
+    ...(heading !== undefined ? { heading: Math.round(heading) } : {}),
+    ...(onGround !== undefined ? { on_ground: onGround } : {}),
   };
   await repositories.simlink.updateLastData(normalized);
   const status = await repositories.simlink.getStatus();
   if (status.flightId) {
     await repositories.flights.update(status.flightId, {
-      current_lat: normalized.lat,
-      current_lon: normalized.lon,
-      current_alt: normalized.alt,
-      current_speed: normalized.speed,
-      current_heading: normalized.heading,
+      ...(lat !== undefined ? { current_lat: lat } : {}),
+      ...(lon !== undefined ? { current_lon: lon } : {}),
+      ...(altitude !== undefined ? { current_alt: Math.round(altitude) } : {}),
+      ...(speed !== undefined ? { current_speed: Math.round(speed) } : {}),
+      ...(heading !== undefined ? { current_heading: Math.round(heading) } : {}),
     });
   }
   return {
@@ -1242,6 +1374,7 @@ export async function handleChatMessage(ircMessage: TwitchChatMessage): Promise<
   }
 
   const isExempt = userPermission >= permissions.admin;
+  const cooldownKeys: string[] = [];
   if (!isExempt && command.cooldown.global && (await repositories.cooldowns.isOnCooldown(`global:${command.name}`))) {
     if (!(await repositories.cooldowns.isOnCooldown(`notice:cooldown:global:${command.name}:${ircMessage.channelID}`))) {
       await repositories.cooldowns.setCooldown(`notice:cooldown:global:${command.name}:${ircMessage.channelID}`, 3);
@@ -1266,26 +1399,41 @@ export async function handleChatMessage(ircMessage: TwitchChatMessage): Promise<
 
   if (!isExempt) {
     if (command.cooldown.global) {
-      await repositories.cooldowns.setCooldown(`global:${command.name}`, command.cooldown.global);
+      const key = `global:${command.name}`;
+      await repositories.cooldowns.setCooldown(key, command.cooldown.global);
+      cooldownKeys.push(key);
     }
     if (command.cooldown.user) {
-      await repositories.cooldowns.setCooldown(`user:${command.name}:${ircMessage.senderUserID}`, command.cooldown.user);
+      const key = `user:${command.name}:${ircMessage.senderUserID}`;
+      await repositories.cooldowns.setCooldown(key, command.cooldown.user);
+      cooldownKeys.push(key);
     }
     if (command.cooldown.channel) {
-      await repositories.cooldowns.setCooldown(`channel:${command.name}:${ircMessage.channelID}`, command.cooldown.channel);
+      const key = `channel:${command.name}:${ircMessage.channelID}`;
+      await repositories.cooldowns.setCooldown(key, command.cooldown.channel);
+      cooldownKeys.push(key);
     }
   }
 
-  await command.execute({
-    args,
-    channel: { id: ircMessage.channelID, login: ircMessage.channelName },
-    command,
-    displayName: ircMessage.displayName,
-    messageId: ircMessage.messageID,
-    sender: { id: ircMessage.senderUserID, login: ircMessage.senderUsername, perms: userPermission },
-    text: ircMessage.messageText,
-    send,
-  });
+  try {
+    await command.execute({
+      args,
+      channel: { id: ircMessage.channelID, login: ircMessage.channelName },
+      command,
+      displayName: ircMessage.displayName,
+      messageId: ircMessage.messageID,
+      sender: { id: ircMessage.senderUserID, login: ircMessage.senderUsername, perms: userPermission },
+      text: ircMessage.messageText,
+      send,
+    });
+  } catch (error) {
+    await Promise.all(cooldownKeys.map((key) => repositories.cooldowns.clearCooldown(key)));
+    await milesandmorebotLogger.error(
+      `[#${ircMessage.channelName}] command ${command.name} failed for ${ircMessage.senderUsername}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    await send("Interner Fehler beim Ausfuehren des Commands.");
+    return true;
+  }
 
   await repositories.status.incrementCommandsExecuted();
   await repositories.status.setLastEventAt();
