@@ -66,6 +66,7 @@ class TwitchRequestError extends Error {
 const TWITCH_API_BASE = "https://api.twitch.tv/helix";
 const TWITCH_OAUTH_BASE = "https://id.twitch.tv/oauth2";
 const REQUIRED_BOT_SCOPES = ["user:bot", "user:read:chat", "user:write:chat", "user:manage:whispers"] as const;
+const REFRESH_ERROR_HINT_PATTERNS = ["invalid client secret", "invalid refresh token", "invalid client"] as const;
 
 let botCredentialCache: {
   credentials: BotRuntimeCredentials;
@@ -235,8 +236,8 @@ function getRefreshClientSecret(clientId: string): RefreshClientSecretResolution
     },
   ];
 
-  const match = candidates.find((candidate) => candidate.clientId === normalizedClientId && !!candidate.clientSecret);
-  return match || null;
+  const match = candidates.find((candidate) => candidate.clientId === normalizedClientId && candidate.clientSecret.trim().length > 0);
+  return match ?? null;
 }
 
 function getMissingRefreshClientSecretMessage(clientId: string): string {
@@ -254,12 +255,18 @@ function getMissingRefreshClientSecretMessage(clientId: string): string {
 }
 
 function getRefreshFailureHint(responseText: string): string {
-  const normalized = responseText.toLowerCase();
-  if (
-    normalized.includes("invalid client secret")
-    || normalized.includes("invalid refresh token")
-    || normalized.includes("invalid client")
-  ) {
+  let lowerCaseResponse = responseText.toLowerCase();
+  try {
+    const parsed = JSON.parse(responseText) as { error?: string; message?: string };
+    const structuredMessage = [parsed.error, parsed.message].filter(Boolean).join(" ").toLowerCase();
+    if (structuredMessage) {
+      lowerCaseResponse = structuredMessage;
+    }
+  } catch {
+    // Ignore invalid JSON and fall back to the raw response text
+  }
+
+  if (REFRESH_ERROR_HINT_PATTERNS.some((pattern) => lowerCaseResponse.includes(pattern))) {
     return "Der Refresh-Token gehoert wahrscheinlich nicht zu einer der hier konfigurierten Twitch-Apps. Tokens von twitchtokengenerator.com oder einer anderen Drittanbieter-App muessen fuer deine eigene Twitch-App neu ausgestellt werden.";
   }
   return "";
