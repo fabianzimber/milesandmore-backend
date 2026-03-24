@@ -391,7 +391,7 @@ export function createServer() {
   // Broadcasters still authorize channel:bot via the bot callback, but the client
   // ID/secret are shared with the admin/Helix OAuth flow.
   app.get("/api/twitch/bot-authorize", async (request, reply) => {
-    const twitchClientId = milesandmorebotEnv.twitchClientId;
+    const twitchClientId = milesandmorebotEnv.twitchAppClientId;
     if (!twitchClientId) {
       return error(reply, "TWITCH_APP_CLIENT_ID is not configured", 500);
     }
@@ -431,8 +431,8 @@ export function createServer() {
       return error(reply, "Invalid or missing OAuth state", 403);
     }
 
-    const twitchClientId = milesandmorebotEnv.twitchClientId;
-    const twitchClientSecret = milesandmorebotEnv.twitchClientSecret;
+    const twitchClientId = milesandmorebotEnv.twitchAppClientId;
+    const twitchClientSecret = milesandmorebotEnv.twitchAppClientSecret;
     if (!twitchClientId || !twitchClientSecret) {
       return error(reply, "TWITCH_APP_CLIENT_ID and TWITCH_APP_CLIENT_SECRET must be configured", 500);
     }

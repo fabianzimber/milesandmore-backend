@@ -46,12 +46,10 @@ type BotCredentialInspection = {
   issues: string[];
 };
 
-type RefreshClientSecretSource = "TWITCH_APP_CLIENT_SECRET";
-
 type RefreshClientSecretResolution = {
   clientSecret: string;
-  source: RefreshClientSecretSource;
-};
+  source: string;
+} | null;
 
 class TwitchRequestError extends Error {
   constructor(
@@ -116,12 +114,6 @@ export async function refreshBotAccessToken(): Promise<boolean> {
     return false;
   }
 
-  const refreshClientSecret = getRefreshClientSecret(credentials.botClientId);
-  if (!refreshClientSecret) {
-    await milesandmorebotLogger.error(getMissingRefreshClientSecretMessage(credentials.botClientId));
-    return false;
-  }
-
   const refreshLock = await repositories.locks.acquire("twitch:token-refresh", 60);
   if (!refreshLock) {
     await milesandmorebotLogger.info("[TokenRefresh] Ein anderer Prozess erneuert den Token bereits, warte kurz und verwende dann aktualisierte Credentials.");
@@ -135,10 +127,16 @@ export async function refreshBotAccessToken(): Promise<boolean> {
   try {
     const params = new URLSearchParams({
       client_id: credentials.botClientId,
-      client_secret: refreshClientSecret.clientSecret,
       grant_type: "refresh_token",
       refresh_token: credentials.refreshToken,
     });
+
+    // Include client_secret only when the bot shares the app's Client ID (confidential client).
+    // A separate bot Client ID is treated as a public client — no secret needed.
+    const clientSecret = getRefreshClientSecret(credentials.botClientId);
+    if (clientSecret) {
+      params.set("client_secret", clientSecret.clientSecret);
+    }
 
     const response = await fetch(`${TWITCH_OAUTH_BASE}/token`, {
       method: "POST",
@@ -149,8 +147,9 @@ export async function refreshBotAccessToken(): Promise<boolean> {
     if (!response.ok) {
       const text = await response.text();
       const hint = getRefreshFailureHint(text);
+      const secretHint = clientSecret ? `via ${clientSecret.source}` : "ohne Client-Secret (Public Client)";
       await milesandmorebotLogger.error(
-        `[TokenRefresh] Twitch refresh failed via ${refreshClientSecret.source}: ${response.status} ${text}${hint ? ` ${hint}` : ""}`,
+        `[TokenRefresh] Twitch refresh failed ${secretHint}: ${response.status} ${text}${hint ? ` ${hint}` : ""}`,
       );
       return false;
     }
@@ -213,14 +212,15 @@ function getAppCredentialSnapshot() {
   };
 }
 
-function getRefreshClientSecret(clientId: string): RefreshClientSecretResolution | null {
-  const normalizedClientId = clientId.trim();
+function getRefreshClientSecret(botClientId: string): RefreshClientSecretResolution {
+  const normalizedClientId = botClientId.trim();
   if (!normalizedClientId) {
     return null;
   }
 
+  // Only include the secret when bot and app share the same Client ID (confidential client).
   const appSnapshot = getAppCredentialSnapshot();
-  if (appSnapshot.clientId !== normalizedClientId || appSnapshot.clientSecret.trim().length === 0) {
+  if (normalizedClientId !== appSnapshot.clientId || !appSnapshot.clientSecret) {
     return null;
   }
 
@@ -230,15 +230,8 @@ function getRefreshClientSecret(clientId: string): RefreshClientSecretResolution
   };
 }
 
-function getMissingRefreshClientSecretMessage(clientId: string): string {
-  const configuredClientIds = [(milesandmorebotEnv.twitchClientId || "").trim()].filter(Boolean);
-
-  const configuredIdsHint =
-    configuredClientIds.length > 0
-      ? ` Konfigurierte Client-IDs: ${configuredClientIds.join(", ")}.`
-      : " Es ist keine passende Twitch-Client-ID konfiguriert.";
-
-  return `[TokenRefresh] Kein passendes Client-Secret fuer Bot-Client-ID ${clientId || "(leer)"} gefunden.${configuredIdsHint} Ein Refresh-Token kann nur mit dem Client-Secret derselben Twitch-App erneuert werden, die den Token ausgestellt hat.`;
+function getMissingRefreshClientSecretMessage(botClientId: string): string {
+  return `[TokenRefresh] Bot-Client-ID ${botClientId || "(leer)"} nutzt dieselbe Client-ID wie die App, aber TWITCH_APP_CLIENT_SECRET fehlt. Entweder das Secret setzen oder eine separate TWITCH_BOT_CLIENT_ID (Public Client) verwenden.`;
 }
 
 function getRefreshFailureHint(responseText: string): string {
@@ -261,7 +254,7 @@ function getRefreshFailureHint(responseText: string): string {
 
 function getEnvBotCredentialSnapshot() {
   return {
-    botClientId: (milesandmorebotEnv.twitchClientId || "").trim(),
+    botClientId: (milesandmorebotEnv.twitchBotClientId || "").trim(),
     accessToken: normalizeAccessToken(milesandmorebotEnv.twitchBotAccessToken),
     refreshToken: normalizeRefreshToken(milesandmorebotEnv.twitchBotRefreshToken),
   };
@@ -347,7 +340,7 @@ async function persistBotCredentials(
 async function seedRuntimeBotCredentialsFromEnv(): Promise<BotRuntimeCredentials> {
   const credentials = getEnvBotCredentials();
   if (!credentials) {
-    throw new Error("TWITCH_APP_CLIENT_ID, TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
+    throw new Error("TWITCH_BOT_CLIENT_ID (oder TWITCH_APP_CLIENT_ID), TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
   }
   return persistBotCredentials({
     ...credentials,
@@ -359,7 +352,7 @@ async function seedRuntimeBotCredentialsFromEnv(): Promise<BotRuntimeCredentials
 async function getBotCredentialInput(): Promise<BotRuntimeCredentials> {
   const credentials = await getPreferredBotCredentials();
   if (!credentials) {
-    throw new Error("TWITCH_APP_CLIENT_ID, TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
+    throw new Error("TWITCH_BOT_CLIENT_ID (oder TWITCH_APP_CLIENT_ID), TWITCH_BOT_ACCESS_TOKEN und TWITCH_BOT_REFRESH_TOKEN muessen gesetzt sein.");
   }
   return credentials;
 }
@@ -405,7 +398,7 @@ async function validateBotToken(clientId: string, accessToken: string): Promise<
 
   const payload = (await response.json()) as TwitchValidateResponse;
   if (payload.client_id !== clientId) {
-    throw new Error("TWITCH_APP_CLIENT_ID passt nicht zum Bot-Token.");
+    throw new Error(`Bot-Token Client-ID (${payload.client_id}) passt nicht zur konfigurierten TWITCH_BOT_CLIENT_ID (${clientId}).`);
   }
 
   const missingScopes = REQUIRED_BOT_SCOPES.filter((scope) => !payload.scopes?.includes(scope));
@@ -474,14 +467,8 @@ async function inspectBotCredentials(): Promise<BotCredentialInspection> {
     issues: [],
   };
 
-  if (!appSnapshot.clientId) {
-    inspection.issues.push("TWITCH_APP_CLIENT_ID fehlt.");
-  }
-  if (!appSnapshot.clientSecret) {
-    inspection.issues.push("TWITCH_APP_CLIENT_SECRET fehlt.");
-  }
   if (!inspection.botClientId) {
-    inspection.issues.push("TWITCH_APP_CLIENT_ID fehlt.");
+    inspection.issues.push("TWITCH_BOT_CLIENT_ID oder TWITCH_APP_CLIENT_ID fehlt.");
   }
   if (!inspection.accessToken) {
     inspection.issues.push("TWITCH_BOT_ACCESS_TOKEN fehlt.");
@@ -489,7 +476,9 @@ async function inspectBotCredentials(): Promise<BotCredentialInspection> {
   if (!inspection.refreshToken) {
     inspection.issues.push("TWITCH_BOT_REFRESH_TOKEN fehlt.");
   }
-  if (inspection.refreshConfigured && !getRefreshClientSecret(inspection.botClientId)) {
+  // Only warn about missing client secret when bot and app share the same client ID.
+  const botUsesAppClientId = inspection.botClientId === appSnapshot.clientId;
+  if (botUsesAppClientId && !appSnapshot.clientSecret && inspection.refreshConfigured) {
     inspection.issues.push(getMissingRefreshClientSecretMessage(inspection.botClientId));
   }
   if (inspection.issues.length > 0) {
