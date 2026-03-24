@@ -16,7 +16,8 @@ export function getAppUrl(): string {
   return process.env.BACKEND_PUBLIC_URL || "http://localhost:8080";
 }
 
-// Twitch Developer App credentials (used for streamer OAuth flows such as channel:bot authorization).
+// Twitch Developer App credentials (used for streamer OAuth, admin OAuth, and Helix API requests).
+// When the bot shares this Client ID, these credentials are also used for token refresh.
 const twitchAppClientId = (process.env.TWITCH_APP_CLIENT_ID || "").trim();
 const twitchAppClientSecret = (process.env.TWITCH_APP_CLIENT_SECRET || "").trim();
 
