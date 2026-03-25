@@ -1163,7 +1163,8 @@ const commands: CommandDefinition[] = [
       const dep = participant.dep_name || participant.icao_from || "";
       const arr = participant.arr_name || participant.icao_to || "";
       const seat = participant.seat || "TBD";
-      await context.send(`🪑 Sitz ${seat} | ${participant.flight_number || "Flug"} ${dep}→${arr} | Dashboard-Link: &passenger`);
+      const prefix = getPrefix(context.channel.id);
+      await context.send(`🪑 Sitz ${seat} | ${participant.flight_number || "Flug"} ${dep}→${arr} | Dashboard-Link: ${prefix}passenger`);
     },
   },
   {
