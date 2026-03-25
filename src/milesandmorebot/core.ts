@@ -1186,7 +1186,7 @@ const commands: CommandDefinition[] = [
         await context.send(`@${context.sender.login} Dein Dashboard-Link wurde dir per Whisper geschickt! ✈️`);
       } catch (err) {
         await milesandmorebotLogger.error(`[Whisper] Konnte Whisper an ${context.sender.login} nicht senden: ${err instanceof Error ? err.message : err}`);
-        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – bitte aktiviere Whispers von Fremden in deinen Twitch-Einstellungen.`);
+        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – bitte überprüfe deine Twitch-Whisper-Einstellungen und versuche es später erneut.`);
       }
     },
   },
