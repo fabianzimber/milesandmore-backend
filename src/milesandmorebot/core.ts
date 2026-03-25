@@ -84,13 +84,13 @@ function formatSafeMention(username: string): string {
   return `@\u200B${username.replace(/^@+/, "")}`;
 }
 
-function countryCodeToFlag(code: string): string {
+export function countryCodeToFlag(code: string): string {
   if (!code || code.length !== 2) return "";
   const upper = code.toUpperCase();
   return upper.split("").map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("");
 }
 
-async function say(channelLogin: string, message: string): Promise<void> {
+export async function say(channelLogin: string, message: string): Promise<void> {
   for (const part of splitMessage(message)) {
     await sendChatMessage(channelLogin, part);
   }
@@ -799,6 +799,202 @@ export async function removeManagedChannel(channelName: string) {
   await partIrcChannel(lower);
 }
 
+const ICAO_PREFIX_TO_COUNTRY: Record<string, { code: string; name: string }> = {
+  // North America
+  C: { code: "CA", name: "Kanada" },
+  K: { code: "US", name: "USA" },
+  PA: { code: "US", name: "USA" },
+  PF: { code: "US", name: "USA" },
+  PH: { code: "US", name: "USA" },
+  PJ: { code: "US", name: "USA" },
+  TJ: { code: "PR", name: "Puerto Rico" },
+  // Central America & Caribbean
+  MM: { code: "MX", name: "Mexiko" },
+  MC: { code: "CU", name: "Kuba" },
+  MU: { code: "CU", name: "Kuba" },
+  MD: { code: "DO", name: "Dominikanische Republik" },
+  MG: { code: "GT", name: "Guatemala" },
+  MH: { code: "HN", name: "Honduras" },
+  MK: { code: "JM", name: "Jamaika" },
+  MN: { code: "NI", name: "Nicaragua" },
+  MP: { code: "PA", name: "Panama" },
+  MR: { code: "CR", name: "Costa Rica" },
+  MS: { code: "SV", name: "El Salvador" },
+  MT: { code: "HT", name: "Haiti" },
+  MY: { code: "BS", name: "Bahamas" },
+  MZ: { code: "BZ", name: "Belize" },
+  TT: { code: "TT", name: "Trinidad und Tobago" },
+  TB: { code: "BB", name: "Barbados" },
+  // South America
+  SA: { code: "AR", name: "Argentinien" },
+  SB: { code: "BR", name: "Brasilien" },
+  SD: { code: "BR", name: "Brasilien" },
+  SN: { code: "BR", name: "Brasilien" },
+  SS: { code: "BR", name: "Brasilien" },
+  SW: { code: "BR", name: "Brasilien" },
+  SC: { code: "CL", name: "Chile" },
+  SE: { code: "EC", name: "Ecuador" },
+  SG: { code: "PY", name: "Paraguay" },
+  SK: { code: "CO", name: "Kolumbien" },
+  SL: { code: "BO", name: "Bolivien" },
+  SM: { code: "SR", name: "Suriname" },
+  SP: { code: "PE", name: "Peru" },
+  SU: { code: "UY", name: "Uruguay" },
+  SV: { code: "VE", name: "Venezuela" },
+  SY: { code: "GY", name: "Guyana" },
+  // Northern Europe
+  EB: { code: "BE", name: "Belgien" },
+  ED: { code: "DE", name: "Deutschland" },
+  ET: { code: "DE", name: "Deutschland" },
+  EE: { code: "EE", name: "Estland" },
+  EF: { code: "FI", name: "Finnland" },
+  EG: { code: "GB", name: "Vereinigtes Königreich" },
+  EH: { code: "NL", name: "Niederlande" },
+  EI: { code: "IE", name: "Irland" },
+  EK: { code: "DK", name: "Dänemark" },
+  EL: { code: "LU", name: "Luxemburg" },
+  EN: { code: "NO", name: "Norwegen" },
+  EP: { code: "PL", name: "Polen" },
+  ES: { code: "SE", name: "Schweden" },
+  EV: { code: "LV", name: "Lettland" },
+  EY: { code: "LT", name: "Litauen" },
+  // Southern Europe
+  LA: { code: "AL", name: "Albanien" },
+  LB: { code: "BG", name: "Bulgarien" },
+  LC: { code: "CY", name: "Zypern" },
+  LD: { code: "HR", name: "Kroatien" },
+  LE: { code: "ES", name: "Spanien" },
+  GC: { code: "ES", name: "Spanien" },
+  LF: { code: "FR", name: "Frankreich" },
+  LG: { code: "GR", name: "Griechenland" },
+  LH: { code: "HU", name: "Ungarn" },
+  LI: { code: "IT", name: "Italien" },
+  LJ: { code: "SI", name: "Slowenien" },
+  LK: { code: "CZ", name: "Tschechien" },
+  LL: { code: "IL", name: "Israel" },
+  LM: { code: "MT", name: "Malta" },
+  LO: { code: "AT", name: "Österreich" },
+  LP: { code: "PT", name: "Portugal" },
+  LQ: { code: "BA", name: "Bosnien und Herzegowina" },
+  LR: { code: "RO", name: "Rumänien" },
+  LS: { code: "CH", name: "Schweiz" },
+  LT: { code: "TR", name: "Türkei" },
+  LU: { code: "MD", name: "Moldau" },
+  LW: { code: "MK", name: "Nordmazedonien" },
+  LX: { code: "GI", name: "Gibraltar" },
+  LY: { code: "RS", name: "Serbien" },
+  LZ: { code: "SK", name: "Slowakei" },
+  // Eastern Europe / Russia
+  UK: { code: "UA", name: "Ukraine" },
+  UM: { code: "BY", name: "Belarus" },
+  UB: { code: "AZ", name: "Aserbaidschan" },
+  UC: { code: "KG", name: "Kirgisistan" },
+  UD: { code: "AM", name: "Armenien" },
+  UG: { code: "GE", name: "Georgien" },
+  UA: { code: "KZ", name: "Kasachstan" },
+  UT: { code: "TJ", name: "Tadschikistan" },
+  UU: { code: "RU", name: "Russland" },
+  UW: { code: "RU", name: "Russland" },
+  UI: { code: "RU", name: "Russland" },
+  UN: { code: "RU", name: "Russland" },
+  UO: { code: "RU", name: "Russland" },
+  // Middle East
+  OA: { code: "AF", name: "Afghanistan" },
+  OB: { code: "BH", name: "Bahrain" },
+  OE: { code: "SA", name: "Saudi-Arabien" },
+  OI: { code: "IR", name: "Iran" },
+  OJ: { code: "JO", name: "Jordanien" },
+  OK: { code: "KW", name: "Kuwait" },
+  OL: { code: "LB", name: "Libanon" },
+  OM: { code: "AE", name: "Vereinigte Arabische Emirate" },
+  OO: { code: "OM", name: "Oman" },
+  OP: { code: "PK", name: "Pakistan" },
+  OR: { code: "IQ", name: "Irak" },
+  OS: { code: "SY", name: "Syrien" },
+  OT: { code: "QA", name: "Katar" },
+  OY: { code: "YE", name: "Jemen" },
+  // South / Southeast Asia
+  VA: { code: "IN", name: "Indien" },
+  VE: { code: "IN", name: "Indien" },
+  VI: { code: "IN", name: "Indien" },
+  VO: { code: "IN", name: "Indien" },
+  VB: { code: "MM", name: "Myanmar" },
+  VY: { code: "MM", name: "Myanmar" },
+  VC: { code: "LK", name: "Sri Lanka" },
+  VD: { code: "KH", name: "Kambodscha" },
+  VG: { code: "BD", name: "Bangladesch" },
+  VH: { code: "HK", name: "Hongkong" },
+  VL: { code: "LA", name: "Laos" },
+  VN: { code: "NP", name: "Nepal" },
+  VR: { code: "MV", name: "Malediven" },
+  VT: { code: "TH", name: "Thailand" },
+  VV: { code: "VN", name: "Vietnam" },
+  // East Asia
+  RC: { code: "TW", name: "Taiwan" },
+  RJ: { code: "JP", name: "Japan" },
+  RK: { code: "KR", name: "Südkorea" },
+  RP: { code: "PH", name: "Philippinen" },
+  ZB: { code: "CN", name: "China" },
+  ZG: { code: "CN", name: "China" },
+  ZH: { code: "CN", name: "China" },
+  ZJ: { code: "CN", name: "China" },
+  ZL: { code: "CN", name: "China" },
+  ZP: { code: "CN", name: "China" },
+  ZS: { code: "CN", name: "China" },
+  ZT: { code: "CN", name: "China" },
+  ZU: { code: "CN", name: "China" },
+  ZW: { code: "CN", name: "China" },
+  ZY: { code: "CN", name: "China" },
+  ZK: { code: "KP", name: "Nordkorea" },
+  ZM: { code: "MN", name: "Mongolei" },
+  // Southeast Asia
+  WA: { code: "ID", name: "Indonesien" },
+  WI: { code: "ID", name: "Indonesien" },
+  WR: { code: "ID", name: "Indonesien" },
+  WB: { code: "MY", name: "Malaysia" },
+  WM: { code: "MY", name: "Malaysia" },
+  WS: { code: "SG", name: "Singapur" },
+  VF: { code: "BT", name: "Bhutan" },
+  // Oceania
+  Y: { code: "AU", name: "Australien" },
+  NZ: { code: "NZ", name: "Neuseeland" },
+  // Africa
+  DA: { code: "DZ", name: "Algerien" },
+  DT: { code: "TN", name: "Tunesien" },
+  DN: { code: "NG", name: "Nigeria" },
+  DG: { code: "GH", name: "Ghana" },
+  FA: { code: "ZA", name: "Südafrika" },
+  FK: { code: "CM", name: "Kamerun" },
+  FL: { code: "ZM", name: "Sambia" },
+  FN: { code: "AO", name: "Angola" },
+  FQ: { code: "MZ", name: "Mosambik" },
+  FV: { code: "ZW", name: "Simbabwe" },
+  FW: { code: "MW", name: "Malawi" },
+  FY: { code: "NA", name: "Namibia" },
+  FZ: { code: "CD", name: "Demokratische Republik Kongo" },
+  HA: { code: "ET", name: "Äthiopien" },
+  HC: { code: "SO", name: "Somalia" },
+  HE: { code: "EG", name: "Ägypten" },
+  HH: { code: "ER", name: "Eritrea" },
+  HK: { code: "KE", name: "Kenia" },
+  HL: { code: "LY", name: "Libyen" },
+  HR: { code: "RW", name: "Ruanda" },
+  HS: { code: "SD", name: "Sudan" },
+  HT: { code: "TZ", name: "Tansania" },
+  HU: { code: "UG", name: "Uganda" },
+  GM: { code: "MA", name: "Marokko" },
+  // Iceland / Greenland / Arctic
+  BI: { code: "IS", name: "Island" },
+  BG: { code: "GL", name: "Grönland" },
+};
+
+function icaoRegionToCountry(icaoRegion: string): { code: string; name: string } | null {
+  if (!icaoRegion) return null;
+  const upper = icaoRegion.toUpperCase();
+  // Try 2-letter match first, then 1-letter
+  return ICAO_PREFIX_TO_COUNTRY[upper] || ICAO_PREFIX_TO_COUNTRY[upper[0]] || null;
+}
+
 export async function fetchSimBriefFlightPlan(pilotId: string): Promise<SimBriefFlightPlan> {
   const response = await fetch(
     `https://www.simbrief.com/api/xml.fetcher.php?username=${encodeURIComponent(pilotId)}&json=1`,
@@ -828,7 +1024,7 @@ export async function fetchSimBriefFlightPlan(pilotId: string): Promise<SimBrief
       icao: String((data.origin as { icao_code?: string } | undefined)?.icao_code || ""),
       name: String((data.origin as { name?: string } | undefined)?.name || ""),
       gate: String((data.origin as { plan_rwy?: string } | undefined)?.plan_rwy || ""),
-      country: String((data.origin as { country?: string } | undefined)?.country || ""),
+      country: icaoRegionToCountry(String((data.origin as { icao_region?: string } | undefined)?.icao_region || ""))?.code || "",
       lat: parseFloat(String((data.origin as { pos_lat?: string } | undefined)?.pos_lat || "")) || undefined,
       lon: parseFloat(String((data.origin as { pos_long?: string } | undefined)?.pos_long || "")) || undefined,
     },
@@ -836,8 +1032,8 @@ export async function fetchSimBriefFlightPlan(pilotId: string): Promise<SimBrief
       icao: String((data.destination as { icao_code?: string } | undefined)?.icao_code || ""),
       name: String((data.destination as { name?: string } | undefined)?.name || ""),
       gate: String((data.destination as { plan_rwy?: string } | undefined)?.plan_rwy || ""),
-      country: String((data.destination as { country?: string } | undefined)?.country || ""),
-      country_name: String((data.destination as { country_name?: string; country?: string } | undefined)?.country_name || (data.destination as { country?: string } | undefined)?.country || ""),
+      country: icaoRegionToCountry(String((data.destination as { icao_region?: string } | undefined)?.icao_region || ""))?.code || "",
+      country_name: icaoRegionToCountry(String((data.destination as { icao_region?: string } | undefined)?.icao_region || ""))?.name || "",
       lat: parseFloat(String((data.destination as { pos_lat?: string } | undefined)?.pos_lat || "")) || undefined,
       lon: parseFloat(String((data.destination as { pos_long?: string } | undefined)?.pos_long || "")) || undefined,
     },

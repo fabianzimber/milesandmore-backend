@@ -6,6 +6,7 @@ import {
   assignSeats,
   awardFlightRewards,
   changeSeat,
+  countryCodeToFlag,
   createFlight,
   fetchSimBriefFlightPlan,
   finishBoardingJob,
@@ -23,6 +24,7 @@ import {
   resumeBoarding,
   resumeFlight,
   saveAircraftConfig,
+  say,
   sendBoardingWarningJob,
   updateFlightStatus,
 } from "./milesandmorebot/core";
@@ -214,12 +216,29 @@ export function createServer() {
     if (!body.status) {
       return error(reply, "status required");
     }
+    const flight = await getFlightById(flightId);
+    if (!flight) {
+      return error(reply, "Flight not found", 404);
+    }
     const updated = await updateFlightStatus(flightId, body.status);
     if (!updated) {
       return error(reply, "Flight not found", 404);
     }
+    if (body.status === "in_flight") {
+      const assignments = await assignSeats(flightId);
+      await say(flight.channel_name, `✅ Boarding abgeschlossen · ${assignments.length} Passagiere · Guten Flug! peepoLove`);
+      return { status: body.status };
+    }
     if (body.status === "completed") {
-      return { status: body.status, rewards: await awardFlightRewards(flightId) };
+      const rewards = await awardFlightRewards(flightId);
+      const depName = flight.dep_name || flight.icao_from;
+      const arrName = flight.arr_name || flight.icao_to;
+      const miles = rewards.length > 0 ? rewards[0].miles_earned : 0;
+      const parts = [`🏁 ${depName}→${arrName} ist gelandet Clap`];
+      if (rewards.length > 0) parts.push(`| ${rewards.length} Pax | +${miles} Meilen peepoHappy`);
+      if (flight.arr_country_name) parts.push(`| ${countryCodeToFlag(flight.arr_country || "")} ${flight.arr_country_name}`);
+      await say(flight.channel_name, parts.join(" "));
+      return { status: body.status, rewards };
     }
     return { status: body.status };
   });
