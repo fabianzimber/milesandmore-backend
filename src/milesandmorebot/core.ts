@@ -1091,8 +1091,7 @@ const commands: CommandDefinition[] = [
         await sendWhisper(context.sender.id, `✈️ Dein persönlicher Boarding Pass: ${dashboardUrl}`);
       } catch (err) {
         await milesandmorebotLogger.error(`[Whisper] Konnte Whisper an ${context.sender.login} nicht senden: ${err instanceof Error ? err.message : err}`);
-        // Fallback: send link in chat if whisper fails
-        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – hier dein Link: ${dashboardUrl}`);
+        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – nutze &passenger um deinen Link zu erhalten.`);
       }
     },
   },
@@ -1164,7 +1163,30 @@ const commands: CommandDefinition[] = [
       const dep = participant.dep_name || participant.icao_from || "";
       const arr = participant.arr_name || participant.icao_to || "";
       const seat = participant.seat || "TBD";
-      await context.send(`🪑 Sitz ${seat} | ${participant.flight_number || "Flug"} ${dep}→${arr} | Dashboard: ${getDashboardUrl(participant.participant_hash)}`);
+      await context.send(`🪑 Sitz ${seat} | ${participant.flight_number || "Flug"} ${dep}→${arr} | Dashboard-Link: &passenger`);
+    },
+  },
+  {
+    name: "passenger",
+    aliases: ["boardingpass", "mylink", "link"],
+    description: "Schickt dir deinen persönlichen Dashboard-Link per Whisper.",
+    usage: "&passenger",
+    cooldown: { global: 0, user: 10, channel: 0 },
+    permissionLevel: permissions.default,
+    async execute(context) {
+      const participant = await repositories.participants.getActiveByUser(context.sender.id);
+      if (!participant) {
+        await context.send(`@${context.sender.login} Du bist derzeit keinem aktiven Flug zugeordnet. modCheck`);
+        return;
+      }
+      const dashboardUrl = getDashboardUrl(participant.participant_hash);
+      try {
+        await sendWhisper(context.sender.id, `✈️ Dein persönlicher Boarding Pass: ${dashboardUrl}`);
+        await context.send(`@${context.sender.login} Dein Dashboard-Link wurde dir per Whisper geschickt! ✈️`);
+      } catch (err) {
+        await milesandmorebotLogger.error(`[Whisper] Konnte Whisper an ${context.sender.login} nicht senden: ${err instanceof Error ? err.message : err}`);
+        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – bitte aktiviere Whispers von Fremden in deinen Twitch-Einstellungen.`);
+      }
     },
   },
   {
