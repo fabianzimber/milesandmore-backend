@@ -1091,7 +1091,7 @@ const commands: CommandDefinition[] = [
         await sendWhisper(context.sender.id, `✈️ Dein persönlicher Boarding Pass: ${dashboardUrl}`);
       } catch (err) {
         await milesandmorebotLogger.error(`[Whisper] Konnte Whisper an ${context.sender.login} nicht senden: ${err instanceof Error ? err.message : err}`);
-        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – nutze &passenger um deinen Link zu erhalten.`);
+        await context.send(`@${context.sender.login} Whisper fehlgeschlagen – bitte aktiviere Twitch-Whispers und versuche den Befehl erneut.`);
       }
     },
   },
