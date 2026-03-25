@@ -224,7 +224,7 @@ export function createServer() {
     if (!updated) {
       return error(reply, "Flight not found", 404);
     }
-    if (body.status === "in_flight") {
+    if (flight.status !== "in_flight" && body.status === "in_flight") {
       const assignments = await assignSeats(flightId);
       await say(flight.channel_name, `✅ Boarding abgeschlossen · ${assignments.length} Passagiere · Guten Flug! peepoLove`);
       return { status: body.status };
